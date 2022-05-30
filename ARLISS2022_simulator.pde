@@ -1,3 +1,5 @@
+import java.util.Date;
+
 /*
 * Processing描画関数 =======================
 */
@@ -11,6 +13,7 @@ final String mapImageFileName = "map.jpg";
 PImage mapImage;
 boolean isShowMap = true;
 boolean isShowGrid = true;
+boolean isShowAccelZ = false;
 
 // プログラム開始時に一度だけ実行される処理
 void settings() {
@@ -35,8 +38,9 @@ void setup() {
 }
 
 final String COMMAND_TEXT = "[コマンド]\n" 
-  + "　地形表示切り替え: m\n"
-  + "　グリッド切り替え: g";
+  + "　地形表示: m\n"
+  + "　グリッド表示: g\n"
+  + "　子機1加速度Z(コンソール): a\n";
 final int COMMAND_TEXT_WIDTH = 200;
 
 // setup()実行後に繰り返し実行される処理
@@ -74,14 +78,16 @@ void draw() {
   //DEBUG
   for (ChildRover chileRover : childrenRovers) {
      chileRover.velocity = 3 * pixelPerMeter;
-     chileRover.targetAzimuth = 0;
      chileRover.update(deltaT);
   }
   
   // ローバー描画
   drawRover(parentRover, 100, 0, 0);
-  for (ChildRover chilerenRover : childrenRovers) {
-     drawRover(chilerenRover, 0, 100, 0);
+  for (int i = 0; i < childrenRovers.size(); i++) {
+     drawRover(childrenRovers.get(i), 0, 50 + 20 * i, 0);
+     if (i == 0 && isShowAccelZ) {
+       System.out.println("AccelZ: " + childrenRovers.get(i).getAccelZ());
+     }
   }
   
   lastMillisTime = currentMillisTime;
@@ -92,7 +98,7 @@ void drawRover(RoverBase rover, int r, int g, int b) {
   pushMatrix();
   LatLng latLng = rover.getCoord();
   translate((float)latLng.lng, (float)latLng.lat);
-  rotate(radians((float)rover.getAzimuth()));
+  rotate(-radians((float)rover.getAzimuth() + 180));
   scale(0.2);
   rect(-30, -15, 60, 30); //body
   triangle(-20, -15, 20, -15, 0, -25); //body front
@@ -110,6 +116,40 @@ void keyPressed() {
     isShowMap = !isShowMap;
   } else if (key == 'G' || key == 'g') {
     isShowGrid = !isShowGrid;
+  } else if (key == 'A' || key == 'a') {
+    isShowAccelZ = !isShowAccelZ;
+  }
+}
+
+/*
+* ミッション関連 =======================
+*/
+
+enum Mode{
+    STAY_PARENT_AND_CHILDREN,
+    CHILDREN_SERACH,
+    SEND_CHILDREN_DATA,
+    CARRY_PARENT,
+    CALL_CHILDREN_AFTER_CARRY,
+};
+Mode mode = Mode.STAY_PARENT_AND_CHILDREN;
+
+class SearchRecord {
+  int id; 
+  // 操作に関する記録(調査事項によって変える)
+  double lat;
+  double lng;
+  double accelZ;
+  double azimuth;
+  Date atTime; //時分秒のみ
+
+  SearchRecord(int id, double lat, double lng, double accelZ, double azimuth, Date atTime) {
+     this.id = id;
+     this.lat = lat;
+     this.lng = lng;
+     this.accelZ = accelZ;
+     this.azimuth = azimuth;
+     this.atTime = atTime;
   }
 }
 
@@ -123,15 +163,21 @@ class RoverBase {
   public double targetAzimuth;
   public double velocity; //速度 (加速度とかはめんどいので省略)
   private double azimuth;
+  private double accelZ;
   
   // シミュレーション上関連
   private final double rotateAbility = 10; // 回転速度deg/sec
+  private final double gpsError = 5; // GPS誤差 m
+  private float lastMapColor;
+  private float elipsedTime = 0;
   
   RoverBase(double lat, double lng, double azimuth) {
     this.latLng = new LatLng(lat, lng);
     this.velocity = 0;
     this.azimuth = azimuth;
     this.targetAzimuth = azimuth;
+    this.lastMapColor = getMapColor();
+    this.accelZ = 1.0;
   }
   
   LatLng getCoord() {
@@ -140,6 +186,19 @@ class RoverBase {
   
   double getAzimuth() {
     return azimuth;
+  }
+  
+  double getAccelZ() {
+    return accelZ + 0.05 - random(0.1);
+  }
+  
+  private float getMapColor() { // マップから自分の座標の色情報を取得する
+    PImage croped = mapImage.get((int)latLng.lng - 10, (int)latLng.lat - 10, 20, 20);
+    int redAve = 0;
+    for (int i = 0; i < croped.pixels.length; i++) {
+      redAve += red(croped.pixels[i]);
+    }
+    return redAve /(croped.pixels.length * 10.0);
   }
   
   void update(double deltaT) {
@@ -160,19 +219,28 @@ class RoverBase {
       azimuth -= deltaT * rotateAbility;
     }
     // 移動制御
-    latLng.lat += -cos(radians((float)azimuth)) * velocity * deltaT;
+    latLng.lat += cos(radians((float)azimuth)) * velocity * deltaT;
     latLng.lng += sin(radians((float)azimuth)) * velocity * deltaT;
     
-    if (latLng.lat < 0) {
-      latLng.lat = 0;
-    } else if (latLng.lat > SCREEN_HEIGHT) {
-      latLng.lat = SCREEN_HEIGHT;
+    if (latLng.lat < 10) {
+      latLng.lat = 10;
+    } else if (latLng.lat > SCREEN_HEIGHT - 10) {
+      latLng.lat = SCREEN_HEIGHT - 10;
     }
     
-    if (latLng.lng < 0) {
-      latLng.lng = 0;
-    } else if (latLng.lng > SCREEN_WIDTH) {
-      latLng.lng = SCREEN_WIDTH;
+    if (latLng.lng < 10) {
+      latLng.lng = 10;
+    } else if (latLng.lng > SCREEN_WIDTH - 10) {
+      latLng.lng = SCREEN_WIDTH - 10;
+    }
+    
+    // センサ値更新
+    elipsedTime += deltaT;
+    if (elipsedTime > 0.05) {
+      float currentMapColor = getMapColor();
+      accelZ = 1.0 + currentMapColor - lastMapColor;
+      lastMapColor = currentMapColor;
+      elipsedTime = 0;
     }
   }
 }
