@@ -1,4 +1,5 @@
 import java.util.Date;
+import java.util.HashSet;
 
 /*
 * Processing描画関数 =======================
@@ -76,14 +77,31 @@ void draw() {
     // 初期位置は設定済みなのでそのまま探索開始
     mode = Mode.CHILDREN_SERACH;
   } else if (mode == Mode.CHILDREN_SERACH) {
+    switch(searchMode) { // 探索モードで行動変化
+      case STRAIGHT:
+        for (ChildRover childRover : childrenRovers) {
+           childRover.velocity = 3 * PIXEL_PER_METER;
+           childRover.targetAzimuth = 90;
+           if (childRover.getCoord().lng > SCREEN_WIDTH - 5 * PIXEL_PER_METER && !finishedSearchRoverIds.contains(childRover.id)) {
+             finishedSearchRoverIds.add(childRover.id);
+           }
+        }
+        
+        break;
+      case ZIGZAG:
+        break;
+    }
     
+    // 探索終了個体でモード変更
+    if (finishedSearchRoverIds.size() == CHILDREN_ROVERS_NUM) {
+      mode = Mode.SEND_CHILDREN_DATA;
+    }
   }
   
   // ローバー更新
   parentRover.update(deltaT);
-  for (ChildRover chileRover : childrenRovers) {
-     chileRover.velocity = 3 * PIXEL_PER_METER;
-     chileRover.update(deltaT);
+  for (ChildRover childRover : childrenRovers) {
+     childRover.update(deltaT);
   }
   
   // ローバー描画
@@ -101,7 +119,7 @@ void draw() {
      ArrayList<SearchRecord> records = childRover.getRecords();
      for (SearchRecord record: records) {
        float gpsError = (float)childRover.getGpsError();
-       strokeWeight(sqrt((float)record.accelZStd * 100));
+       strokeWeight(sqrt((float)record.accelZVariance * 100));
        circle((float)record.lng, (float)record.lat, gpsError * PIXEL_PER_METER * 2);
        line((float)record.lng, (float)record.lat, (float)record.lng + sin(radians((float)record.azimuth)) * gpsError * PIXEL_PER_METER, (float)record.lat + cos(radians((float)record.azimuth)) * gpsError * PIXEL_PER_METER);
      }
@@ -143,29 +161,36 @@ void keyPressed() {
 * ミッション関連 =======================
 */
 
-enum Mode{
-    STAY_PARENT_AND_CHILDREN,
-    CHILDREN_SERACH,
-    SEND_CHILDREN_DATA,
-    CARRY_PARENT,
+enum Mode{ // 全体のモード
+    STAY_PARENT_AND_CHILDREN, //親機子機待機
+    CHILDREN_SERACH, // 子機探索
+    SEND_CHILDREN_DATA, // 探索データの送信
+    CARRY_PARENT, // 親機学習&移動
     CALL_CHILDREN_AFTER_CARRY,
 };
 Mode mode = Mode.STAY_PARENT_AND_CHILDREN;
 
-class SearchRecord {
+enum SearchMode{
+    STRAIGHT, // 直進
+    ZIGZAG // ジグザグ
+};
+SearchMode searchMode = SearchMode.STRAIGHT;
+HashSet<Integer> finishedSearchRoverIds = new HashSet<Integer>(); // 探索が終了したローバのid
+
+class SearchRecord { // 探索のモード
   int id; 
   // 操作に関する記録(調査事項によって変える)
   double lat;
   double lng;
-  double accelZStd;
+  double accelZVariance;
   double azimuth;
   Date atTime; //時分秒のみ
 
-  SearchRecord(int id, double lat, double lng, double accelZStd, double azimuth, Date atTime) {
+  SearchRecord(int id, double lat, double lng, double accelZVariance, double azimuth, Date atTime) {
      this.id = id;
      this.lat = lat;
      this.lng = lng;
-     this.accelZStd = accelZStd;
+     this.accelZVariance = accelZVariance;
      this.azimuth = azimuth;
      this.atTime = atTime;
   }
@@ -206,7 +231,7 @@ class RoverBase {
   
   LatLng getCoord() { // 位置情報(誤差含む)
     float pixelError = (float)gpsError * PIXEL_PER_METER;
-    return new LatLng(latLng.lat - pixelError + random(2 * pixelError), latLng.lng - pixelError + random(2 * pixelError));
+    return new LatLng(latLng.lat - pixelError + random(2 * pixelError) * random(1.0), latLng.lng - pixelError + random(2 * pixelError) * random(1.0));
   }
   
   double getAngle() { // 方位角情報真値
@@ -252,8 +277,8 @@ class RoverBase {
       azimuth -= deltaT * rotateAbility;
     }
     // 移動制御
-    latLng.lat += cos(radians((float)azimuth)) * velocity * deltaT;
-    latLng.lng += sin(radians((float)azimuth)) * velocity * deltaT;
+    latLng.lat += cos(radians((float)getAzimuth())) * velocity * deltaT;
+    latLng.lng += sin(radians((float)getAzimuth())) * velocity * deltaT;
     
     if (latLng.lat < 10) {
       latLng.lat = 10;
@@ -296,17 +321,29 @@ class ChildRover extends RoverBase {
   
   @Override void update(double deltaT) {
     // 調査記録
-    lastRecordElipsedTime += deltaT;
-    if (lastRecordElipsedTime > 1.0) {
-      LatLng coord = getCoord();
-      records.add(new SearchRecord(id, coord.lat, coord.lng, variance(accelZRecords), mean(azimuthRecords), new Date()));
-      lastRecordElipsedTime = 0;
-    }
-    azimuthRecords.add(new Double(getAzimuth()));
-    accelZRecords.add(new Double(getAccelZ()));
-    if (azimuthRecords.size() > 20) { // MAXで20の履歴にする
-      azimuthRecords.remove(0);
-      accelZRecords.remove(0);
+    if (mode == Mode.CHILDREN_SERACH) {
+      lastRecordElipsedTime += deltaT;
+      if (lastRecordElipsedTime > 1.0) {
+        LatLng coord = getCoord();
+        float accelZVariance = variance(accelZRecords);
+        records.add(new SearchRecord(id, coord.lat, coord.lng, accelZVariance, mean(azimuthRecords), new Date()));
+        // 手前いくつかの記録も更新する
+        int maxUpdateRecordCount = 5; //いくつのデータを更新するか
+        int weightSourceRecord = 2; //現在の記録の重み
+        int updateRecordCount = records.size() > maxUpdateRecordCount  ? maxUpdateRecordCount : records.size() - 1;
+        for (int i = 0; i < updateRecordCount; i++) {
+          SearchRecord updateTarget = records.get(records.size() - i - 1);
+          updateTarget.accelZVariance = (accelZVariance * (maxUpdateRecordCount - i) + updateTarget.accelZVariance * weightSourceRecord) / (maxUpdateRecordCount - i + weightSourceRecord);
+        }
+        
+        lastRecordElipsedTime = 0;
+      }
+      azimuthRecords.add(new Double(getAzimuth()));
+      accelZRecords.add(new Double(getAccelZ()));
+      if (azimuthRecords.size() > 20) { // MAXで20の履歴にする
+        azimuthRecords.remove(0);
+        accelZRecords.remove(0);
+      }
     }
     
     super.update(deltaT);
