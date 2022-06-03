@@ -1,14 +1,23 @@
-import java.util.Date;
-import java.util.HashSet;
+import com.github.chen0040.rl.actionselection.*;
+import com.github.chen0040.rl.learning.actorcritic.*;
+import com.github.chen0040.rl.learning.qlearn.*;
+import com.github.chen0040.rl.learning.rlearn.*;
+import com.github.chen0040.rl.learning.sarsa.*;
+import com.github.chen0040.rl.models.*;
+import com.github.chen0040.rl.utils.*;
+
+import java.util.*;
+import java.util.function.Function;
+import javafx.util.Pair;
 
 /*
 * Processing描画関数 =======================
 */
 
 long lastMillisTime;
-final int SCREEN_WIDTH = 960;
-final int SCREEN_HEIGHT = 360;
-final int PIXEL_PER_METER = 10; // ピクセル数/m
+final int SCREEN_WIDTH = 975;
+final int SCREEN_HEIGHT = 350;
+final int PIXEL_PER_METER = 5; // ピクセル数/m
 
 final String mapImageFileName = "map.jpg";
 PImage mapImage;
@@ -28,12 +37,13 @@ void setup() {
   
   // マップ初期化
   mapImage = loadImage(mapImageFileName);
+  mapImage.resize(SCREEN_WIDTH, SCREEN_HEIGHT);
   
   // ローバ初期化
-  parentRover = new ParentRover(0, SCREEN_HEIGHT / 2, 10, 90);
+  parentRover = new ParentRover(0, SCREEN_HEIGHT / 2, PIXEL_PER_METER * 10, 90);
   childrenRovers = new ArrayList<ChildRover>();
   for (int i = 0; i < CHILDREN_ROVERS_NUM; i++) {
-     childrenRovers.add(new ChildRover(i + 1, SCREEN_HEIGHT / 2 + (i - CHILDREN_ROVERS_NUM / 2) * PIXEL_PER_METER * 5, 30, 90));
+     childrenRovers.add(new ChildRover(i + 1, SCREEN_HEIGHT / 2 + (i - CHILDREN_ROVERS_NUM / 2) * PIXEL_PER_METER * 10, PIXEL_PER_METER * 20, 90));
   }
 }
 
@@ -63,38 +73,68 @@ void draw() {
   if (isShowGrid) {
     stroke(0);
     strokeWeight(1);
-    for (int i = 1; i < (int)(SCREEN_WIDTH / (5 * PIXEL_PER_METER)); i++) {
-      line(i * 5 * PIXEL_PER_METER, 0, i * 5 * PIXEL_PER_METER, SCREEN_HEIGHT);
+    for (int i = 1; i < (int)(SCREEN_WIDTH / (7 * PIXEL_PER_METER)); i++) {
+      line(i * 7 * PIXEL_PER_METER, 0, i * 7 * PIXEL_PER_METER, SCREEN_HEIGHT);
     }
-    for (int i = 1; i < (int)(SCREEN_HEIGHT / (5 * PIXEL_PER_METER)); i++) {
-      line(0, i * 5 * PIXEL_PER_METER, SCREEN_WIDTH, i * 5 * PIXEL_PER_METER);
+    for (int i = 1; i < (int)(SCREEN_HEIGHT / (7 * PIXEL_PER_METER)); i++) {
+      line(0, i * 7 * PIXEL_PER_METER, SCREEN_WIDTH, i * 7 * PIXEL_PER_METER);
     }
     noStroke();
   }
   
   // ミッション系実行
+  double goalLineLng = SCREEN_WIDTH - parentRover.getGpsError() * PIXEL_PER_METER *  3;
   if (mode == Mode.STAY_PARENT_AND_CHILDREN) {
     // 初期位置は設定済みなのでそのまま探索開始
+    for (ChildRover childRover : childrenRovers) {
+       childRover.velocity = 8 * PIXEL_PER_METER;
+       switch(searchMode) { // 探索モードで行動変化
+          case STRAIGHT:
+            childRover.targetAzimuth = 90;
+            break;
+          case ZIGZAG:
+            // TODO: ジグザクの実装
+            childRover.targetCoord = new LatLng(SCREEN_HEIGHT / 2, goalLineLng);
+            break;
+        }
+    }
     mode = Mode.CHILDREN_SERACH;
   } else if (mode == Mode.CHILDREN_SERACH) {
     switch(searchMode) { // 探索モードで行動変化
       case STRAIGHT:
         for (ChildRover childRover : childrenRovers) {
-           childRover.velocity = 3 * PIXEL_PER_METER;
-           childRover.targetAzimuth = 90;
-           if (childRover.getCoord().lng > SCREEN_WIDTH - 5 * PIXEL_PER_METER && !finishedSearchRoverIds.contains(childRover.id)) {
+           if (childRover.getCoord().lng > goalLineLng && !finishedSearchRoverIds.contains(childRover.id)) {
              finishedSearchRoverIds.add(childRover.id);
+             childRover.velocity = 0;
            }
         }
         
         break;
       case ZIGZAG:
+        for (ChildRover childRover : childrenRovers) {
+          
+           childRover.targetCoord = new LatLng(SCREEN_HEIGHT / 2, goalLineLng);
+           if (childRover.isOnTargetPosition() && !finishedSearchRoverIds.contains(childRover.id)) {
+             finishedSearchRoverIds.add(childRover.id);
+             childRover.targetCoord = null;
+             childRover.velocity = 0;
+           }
+        }
         break;
     }
     
     // 探索終了個体でモード変更
     if (finishedSearchRoverIds.size() == CHILDREN_ROVERS_NUM) {
       mode = Mode.SEND_CHILDREN_DATA;
+    }
+  } else if (mode == Mode.SEND_CHILDREN_DATA) {
+    // 省略(実機では通信などでデータを送る必要がある)
+    mode = Mode.CARRY_PARENT;
+  } else if (mode == Mode.CARRY_PARENT) {
+    System.out.println("train: " + trainCount + "/1000");
+    if (trainCount < 1000) {
+      train();
+      trainCount++;
     }
   }
   
@@ -114,16 +154,33 @@ void draw() {
      }
      
      // 探索記録表示
-     stroke(0, 50 + 20 * i, 0, 100);
      noFill();
      ArrayList<SearchRecord> records = childRover.getRecords();
      for (SearchRecord record: records) {
        float gpsError = (float)childRover.getGpsError();
        strokeWeight(sqrt((float)record.accelZVariance * 100));
+       stroke(0, 50 + 20 * i, 0, 100);
        circle((float)record.lng, (float)record.lat, gpsError * PIXEL_PER_METER * 2);
-       line((float)record.lng, (float)record.lat, (float)record.lng + sin(radians((float)record.azimuth)) * gpsError * PIXEL_PER_METER, (float)record.lat + cos(radians((float)record.azimuth)) * gpsError * PIXEL_PER_METER);
+       
+       strokeWeight(1);
+       line((float)record.lng, (float)record.lat, (float)record.lng + sin(radians((float)record.azimuth)) / 2 * gpsError * PIXEL_PER_METER, (float)record.lat + cos(radians((float)record.azimuth)) / 2 * gpsError * PIXEL_PER_METER);
      }
      noStroke();
+  }
+  
+  // 学習記録描画
+  if (!stateHistories.isEmpty()) {
+    ArrayList<Pair<LatLng, Float>> history = stateHistories.get(stateHistories.size() - 1);
+    int r = 255;
+    for (int j = 0; j < history.size(); j++) {
+      Pair<LatLng, Float> e = history.get(j);
+      LatLng latLng = e.getKey();
+      strokeWeight(4);
+      stroke(r / history.size() * (j + 1), 0, 0, 100);
+      point((float)latLng.lng, (float)latLng.lat);
+      strokeWeight(1);
+      line((float)latLng.lng, (float)latLng.lat, (float)latLng.lng + sin(radians(e.getValue())) * 5, (float)latLng.lat + cos(radians(e.getValue())) * 5);
+    }
   }
   
   lastMillisTime = currentMillisTime;
@@ -205,6 +262,7 @@ class RoverBase {
   protected int id;
   private LatLng latLng; //y
   public double targetAzimuth;
+  public LatLng targetCoord = null;
   public double velocity; //速度 (加速度とかはめんどいので省略)
   private double azimuth;
   private double accelZ;
@@ -231,7 +289,7 @@ class RoverBase {
   
   LatLng getCoord() { // 位置情報(誤差含む)
     float pixelError = (float)gpsError * PIXEL_PER_METER;
-    return new LatLng(latLng.lat - pixelError + random(2 * pixelError) * random(1.0), latLng.lng - pixelError + random(2 * pixelError) * random(1.0));
+    return new LatLng(latLng.lat + (- pixelError + random(2 * pixelError)) * random(1.0), latLng.lng + (- pixelError + random(2 * pixelError)) * random(1.0));
   }
   
   double getAngle() { // 方位角情報真値
@@ -259,8 +317,22 @@ class RoverBase {
     return gpsError;
   }
   
+  boolean isOnTargetPosition() {
+    LatLng coord = getCoord();
+    double latDiff = coord.lat - targetCoord.lat;
+    double lngDiff = coord.lng - targetCoord.lng;
+    return latDiff * latDiff + lngDiff * lngDiff < gpsError * gpsError * PIXEL_PER_METER * PIXEL_PER_METER;
+  }
+  
   void update(double deltaT) {
     // 回転制御
+    if (targetCoord != null) {
+      LatLng coord = getCoord();
+      float latDiff = (float)(targetCoord.lat - coord.lat);
+      float lngDiff = (float)(targetCoord.lng - coord.lng);
+      targetAzimuth = degrees(atan2(lngDiff, latDiff));
+    }
+    
     double angleDiff = targetAzimuth - azimuth;
     while (angleDiff > 180) {
       angleDiff -= 360;
@@ -280,16 +352,16 @@ class RoverBase {
     latLng.lat += cos(radians((float)getAzimuth())) * velocity * deltaT;
     latLng.lng += sin(radians((float)getAzimuth())) * velocity * deltaT;
     
-    if (latLng.lat < 10) {
-      latLng.lat = 10;
-    } else if (latLng.lat > SCREEN_HEIGHT - 10) {
-      latLng.lat = SCREEN_HEIGHT - 10;
+    if (latLng.lat < gpsError * PIXEL_PER_METER * 2) {
+      latLng.lat = gpsError * PIXEL_PER_METER * 2;
+    } else if (latLng.lat > SCREEN_HEIGHT - gpsError * PIXEL_PER_METER * 2) {
+      latLng.lat = SCREEN_HEIGHT - gpsError * PIXEL_PER_METER * 2;
     }
     
-    if (latLng.lng < 10) {
-      latLng.lng = 10;
-    } else if (latLng.lng > SCREEN_WIDTH - 10) {
-      latLng.lng = SCREEN_WIDTH - 10;
+    if (latLng.lng < gpsError * PIXEL_PER_METER * 2) {
+      latLng.lng = gpsError * PIXEL_PER_METER * 2;
+    } else if (latLng.lng > SCREEN_WIDTH - gpsError * PIXEL_PER_METER * 2) {
+      latLng.lng = SCREEN_WIDTH - gpsError * PIXEL_PER_METER * 2;
     }
     
     // センサ値更新
@@ -323,7 +395,7 @@ class ChildRover extends RoverBase {
     // 調査記録
     if (mode == Mode.CHILDREN_SERACH) {
       lastRecordElipsedTime += deltaT;
-      if (lastRecordElipsedTime > 1.0) {
+      if (lastRecordElipsedTime > 0.5) {
         LatLng coord = getCoord();
         float accelZVariance = variance(accelZRecords);
         records.add(new SearchRecord(id, coord.lat, coord.lng, accelZVariance, mean(azimuthRecords), new Date()));
@@ -357,6 +429,271 @@ class ChildRover extends RoverBase {
 ParentRover parentRover;
 ArrayList<ChildRover> childrenRovers;
 final int CHILDREN_ROVERS_NUM = 5;
+
+/*
+* 強化学習 =======================
+*/
+
+class World {
+      public int update(ActorCriticLearner agent, Action action, int stateId) {
+    //public Pair<Integer, Action> update(ActorCriticLearner agent, Action action, int stateId) {
+      // 壁対策(回避は右回りで統一)
+      //if (stateId % widthBlockNum == 0 && (action == Action.UPPER_LEFT || action == Action.LEFT || action == Action.BOTTOM_LEFT)){ //左端
+      //  return update(agent, Action.UP, stateId);
+      //}
+      //if ((int)(stateId / widthBlockNum) == heightBlockNum - 1 && (action == Action.UPPER_LEFT || action == Action.UP || action == Action.UPPER_RIGHT)){ //上端
+      //  return update(agent, Action.RIGHT, stateId);
+      //}
+      //if (stateId % widthBlockNum == widthBlockNum - 1 && (action == Action.UPPER_RIGHT || action == Action.RIGHT || action == Action.BOTTOM_RIGHT)){ //右端
+      //  return update(agent, Action.BOTTOM, stateId);
+      //}
+      //if ((int)(stateId / widthBlockNum) == 0 && (action == Action.BOTTOM_LEFT || action == Action.BOTTOM || action == Action.BOTTOM_RIGHT)){ //下端
+      //  return update(agent, Action.LEFT, stateId);
+      //}
+      
+      switch(action) {
+        case UP:
+        stateId += widthBlockNum;
+        break;
+        case UPPER_RIGHT:
+        stateId += widthBlockNum + 1;
+        break;
+        case RIGHT:
+        stateId += 1;
+        break;
+        case BOTTOM_RIGHT:
+        stateId += -widthBlockNum + 1;
+        break;
+        case BOTTOM:
+        stateId += -widthBlockNum;
+        break;
+        case BOTTOM_LEFT:
+        stateId += -widthBlockNum - 1;
+        break;
+        case LEFT:
+        stateId += -1;
+        break;
+        case UPPER_LEFT:
+        stateId += widthBlockNum - 1;
+        break;
+        default:
+        break;
+      }
+      
+      return stateId;
+    }
+    
+    public double reward(ActorCriticLearner agent, int stateId, Action action, ArrayList<SearchRecord> records) {
+      LatLng latLng = stateToLatLng(stateId);
+      ArrayList<SearchRecord> boundingRecords = findBoundingRecord(latLng, records);
+   
+      int reward = 0;
+      // ゴール！
+      if (stateId % widthBlockNum == widthBlockNum - 1) {
+        reward += 1000;
+      }
+      
+      if (boundingRecords.isEmpty()) {
+        return -1;
+      }
+      
+      double weightSum = 0;
+      double accelZVarianceWeightSum = 0;
+      double currentAzimuth = actionToDegree(action);
+      for (SearchRecord record: boundingRecords) {
+        double azimuthDiff = record.azimuth - currentAzimuth;
+        while(azimuthDiff < -180) {
+          azimuthDiff += 360;
+        }
+        while(azimuthDiff > 180) {
+          azimuthDiff -= 360;
+        }
+        float weight = 180 - abs((float)azimuthDiff);
+        accelZVarianceWeightSum += record.accelZVariance * weight;
+        weightSum += weight;
+      }
+      
+      reward += 10 / weightSum * accelZVarianceWeightSum;
+      
+      return reward;
+    }
+    
+    public Set<Integer> getActionsAvailableAtState(int newState) {
+      HashSet<Action> actionSet = new HashSet<Action>(Arrays.asList(Action.values()));
+      actionSet.remove(Action.SIZE);
+      
+      if (newState % widthBlockNum == 0){ //左端
+        actionSet.remove(Action.UPPER_LEFT);
+        actionSet.remove(Action.LEFT);
+        actionSet.remove(Action.BOTTOM_LEFT);
+      }
+      if (floor((float)newState / widthBlockNum) == heightBlockNum - 1){ //上端
+        actionSet.remove(Action.UPPER_LEFT);
+        actionSet.remove(Action.UP);
+        actionSet.remove(Action.UPPER_RIGHT);
+      }
+      if (newState % widthBlockNum == widthBlockNum - 1){ //右端
+        actionSet.remove(Action.UPPER_RIGHT);
+        actionSet.remove(Action.RIGHT);
+        actionSet.remove(Action.BOTTOM_RIGHT);
+      }
+      if (floor((float)newState / widthBlockNum) == 0){ //下端
+        actionSet.remove(Action.BOTTOM_LEFT);
+        actionSet.remove(Action.BOTTOM);
+        actionSet.remove(Action.BOTTOM_RIGHT);
+      }
+      
+      HashSet<Integer> integerSet = new HashSet<Integer>();
+      for (Action action: actionSet) {
+        integerSet.add(action.ordinal());
+      }
+      
+      return integerSet;
+    }
+    
+    public int getState(RoverBase rover) {
+      LatLng latLng = rover.getCoord();
+      int stateId = floor((float)latLng.lng / oneBlockEdge) + floor((float)latLng.lat / oneBlockEdge) * widthBlockNum;     
+      return stateId;
+    }
+    
+    public LatLng stateToLatLng(int stateId) {
+      double lng = (stateId % widthBlockNum) * oneBlockEdge + (oneBlockEdge / 2);
+      double lat = floor((float)stateId / widthBlockNum) * oneBlockEdge + (oneBlockEdge / 2);
+      return new LatLng(lat, lng);
+    }
+    
+    public float actionToDegree(Action action) {
+      return 45.0 * action.ordinal();
+    }
+}
+
+// 行動
+enum Action {
+  UP,
+  UPPER_RIGHT,
+  RIGHT,
+  BOTTOM_RIGHT,
+  BOTTOM,
+  BOTTOM_LEFT,
+  LEFT,
+  UPPER_LEFT,
+  SIZE;
+  
+  public static Action fromInteger(int x) {
+      switch(x) {
+      case 0:
+          return UP;
+      case 1:
+          return UPPER_RIGHT;
+      case 2:
+          return RIGHT;
+      case 3:
+          return BOTTOM_RIGHT;
+      case 4:
+          return BOTTOM;
+      case 5:
+          return BOTTOM_LEFT;
+      case 6:
+          return LEFT;
+      case 7:
+          return UPPER_LEFT;
+      }
+      System.out.println("There is no match action! no: " + x);
+      return null;
+  }
+}
+
+class Move {
+    int oldState;
+    int newState;
+    Action action;
+    double reward;
+    
+    public Move(int oldState, Action action, int newState, double reward) {
+        this.oldState = oldState;
+        this.newState = newState;
+        this.reward = reward;
+        this.action = action;
+    }
+}
+
+// 強化学習のstate数を決める
+final int oneBlockEdge = (5 * PIXEL_PER_METER);
+final int widthBlockNum = SCREEN_WIDTH / oneBlockEdge;
+final int heightBlockNum = SCREEN_HEIGHT / oneBlockEdge;
+
+int trainCount = 0;
+
+ArrayList<ArrayList<Pair<LatLng, Float>>> stateHistories = new ArrayList<ArrayList<Pair<LatLng, Float>>>();
+
+int stateCount = widthBlockNum * heightBlockNum; // マップを7m正方形で分割したのがstateの数。7mなのはGPS半径5mの誤差円の内接正方形の一辺。
+int actionCount = Action.SIZE.ordinal(); // 0: 上 1: 右上 で8方向
+ActorCriticLearner agent = new ActorCriticLearner(stateCount, actionCount);
+
+void train() {
+  ArrayList<Pair<LatLng, Float>> stateHistory = new ArrayList<Pair<LatLng, Float>>();
+  
+  ArrayList<SearchRecord> records = new ArrayList();
+  for (ChildRover rover: childrenRovers) {
+    records.addAll(rover.getRecords());
+  }
+  
+  World world = new World();
+  Function<Integer, Double> V = new  Function<Integer, Double>() { // 参考: https://github.com/chen0040/java-reinforcement-learning/blob/f85cb03e5d16512f6bb9e126fa940b9e49d5bde7/src/main/java/com/github/chen0040/rl/learning/actorcritic/ActorCriticLearner.java#L85
+    @Override
+    public Double apply(Integer value) {
+      return new Double(0); // TODO
+    }
+  };
+  
+  int currentState = world.getState(parentRover);
+  List<Move> moves = new ArrayList<Move>();
+  
+  for(int time=0; time < 10000; ++time){
+   Action action = Action.fromInteger(agent.selectAction(currentState, world.getActionsAvailableAtState(currentState)));
+   //System.out.println("Agent does action-"+action);
+   
+   int newStateId = world.update(agent, action, currentState);
+   double reward = world.reward(agent, currentState, action, records);
+   int oldStateId = currentState;
+   moves.add(new Move(oldStateId, action, newStateId, reward));
+    currentState = newStateId;
+    if (currentState % widthBlockNum == widthBlockNum - 1) {
+      //ゴールしたらbreak
+      System.out.println("time: " + time);
+      break;
+    }
+  }
+  
+  for(int i=moves.size()-1; i >= 0; --i){
+      Move next_move = moves.get(i);
+      if(i != moves.size()-1) {
+          next_move = moves.get(i+1);
+      }
+      Move current_move = moves.get(i);
+      agent.update(current_move.oldState, current_move.action.ordinal(), current_move.newState, world.getActionsAvailableAtState(current_move.newState), current_move.reward, V);
+      stateHistory.add(new Pair<LatLng, Float>(world.stateToLatLng(current_move.oldState), world.actionToDegree(current_move.action)));
+  }
+  
+  stateHistories.add(stateHistory);
+}
+
+void test() {
+
+}
+
+ArrayList<SearchRecord> findBoundingRecord(final LatLng latLng, ArrayList<SearchRecord> records) {
+  ArrayList<SearchRecord> filteredRecords = new ArrayList<SearchRecord>();
+  for (SearchRecord record: records) {
+    double latDiff = record.lat - latLng.lat;
+    double lngDiff = record.lng - latLng.lng;
+    if ((latDiff * latDiff + lngDiff * lngDiff) < 25 * PIXEL_PER_METER * PIXEL_PER_METER) {
+      filteredRecords.add(record);
+    }
+  }
+  return filteredRecords;
+}
 
 /*
 * Utility =======================
