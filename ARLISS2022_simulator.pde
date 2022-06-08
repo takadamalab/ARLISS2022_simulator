@@ -19,7 +19,7 @@ final int SCREEN_WIDTH = 975;
 final int SCREEN_HEIGHT = 350;
 final int PIXEL_PER_METER = 5; // ピクセル数/m
 
-final String mapImageFileName = "map.jpg";
+final String mapImageFileName = "map2.jpg";
 PImage mapImage;
 boolean isShowMap = true;
 boolean isShowGrid = true;
@@ -137,10 +137,11 @@ void draw() {
     // 省略(実機では通信などでデータを送る必要がある)
     mode = Mode.CARRY_PARENT;
   } else if (mode == Mode.CARRY_PARENT) {
-    System.out.println("train: " + trainCount + "/1000");
-    if (trainCount < 1000) {
+    if (currentMillisTime - lastTrainTime > 0 && trainCount < 10000) {
+      System.out.println("train: " + trainCount + "/1000");
       train();
       trainCount++;
+      lastTrainTime = currentMillisTime;
     }
   }
 
@@ -442,50 +443,57 @@ final int CHILDREN_ROVERS_NUM = 5;
 
 class World {
   public int update(ActorCriticLearner agent, Action action, int stateId) {
+    int lngNo = (int)floor((float)stateId / Action.SIZE.ordinal()) % widthBlockNum;
+    int latNo = floor((float)stateId / (Action.SIZE.ordinal() * widthBlockNum));
+    
     switch(action) {
     case UP:
-      stateId += widthBlockNum;
+      latNo += 1;
       break;
     case UPPER_RIGHT:
-      stateId += widthBlockNum + 1;
+      latNo += 1;
+      lngNo += 1;
       break;
     case RIGHT:
-      stateId += 1;
+      lngNo += 1;
       break;
     case BOTTOM_RIGHT:
-      stateId += -widthBlockNum + 1;
+      latNo -= 1;
+      lngNo += 1;
       break;
     case BOTTOM:
-      stateId += -widthBlockNum;
+      latNo -= 1;
       break;
     case BOTTOM_LEFT:
-      stateId += -widthBlockNum - 1;
+      latNo -= 1;
+      lngNo -= 1;
       break;
     case LEFT:
-      stateId += -1;
+      lngNo -= 1;
       break;
     case UPPER_LEFT:
-      stateId += widthBlockNum - 1;
+      latNo += 1;
+      lngNo -= 1;
       break;
     default:
       break;
     }
 
-    return stateId;
+    return getState(latNo, lngNo, action);
   }
 
   public double reward(ActorCriticLearner agent, int stateId, Action action, ArrayList<SearchRecord> records) {
     LatLng latLng = stateToLatLng(stateId);
     ArrayList<SearchRecord> boundingRecords = findBoundingRecord(latLng, records);
 
-    int reward = 0;
+    double reward = 0;
     // ゴール！
-    if (stateId % widthBlockNum == widthBlockNum - 1) {
-      reward += 1000;
-    }
+    //if ((stateId / Action.SIZE.ordinal()) % widthBlockNum == widthBlockNum - 1) {
+    //  reward += 1000;
+    //}
 
     if (boundingRecords.isEmpty()) {
-      return stateId % widthBlockNum <= 8 ? 0 : -0.2;
+      return floor((float)stateId / Action.SIZE.ordinal()) % widthBlockNum <= 4 ? 0 : -0.2;
     }
 
     double weightSum = 0;
@@ -503,29 +511,48 @@ class World {
       accelZVarianceWeightSum += record.accelZVariance * weight;
       weightSum += weight;
     }
+    
+    double weightAve = weightSum / accelZVarianceWeightSum;
+    
+    // System.out.println("weightAve: " + weightAve + ", finalReward:" + (10 / (weightAve * weightAve) - 0.2));
 
-    reward += 100 / weightSum * accelZVarianceWeightSum - 5;
-    System.out.println("a: " + (100 / weightSum * accelZVarianceWeightSum - 5));
+    reward += 10 / (weightAve * weightAve);
 
     return reward;
   }
 
   public Set<Integer> getActionsAvailableAtState(int newState, Action oldAction) {
     HashSet<Action> actionSet;
-    if (oldAction == null) {
-      // 全アクション生成
-      actionSet = new HashSet<Action>(Arrays.asList(Action.values()));
-      actionSet.remove(Action.SIZE);
-    } else {
-      // 前回のActionから近いアクションを生成する
-      int actionSize = Action.SIZE.ordinal();
-      actionSet = new HashSet<Action>();
-      actionSet.add(Action.fromInteger((oldAction.ordinal() + actionSize - 1) % actionSize)); //一つ左回り
-      actionSet.add(oldAction); // 同方向
-      actionSet.add(Action.fromInteger((oldAction.ordinal() + actionSize + 1) % actionSize)); //一つ右回り
+    //if (oldAction == null) {
+    //  // 全アクション生成
+    //  actionSet = new HashSet<Action>(Arrays.asList(Action.values()));
+    //  actionSet.remove(Action.SIZE);
+    //} else {
+    //  // 前回のActionから近いアクションを生成する
+    //  int actionSize = Action.SIZE.ordinal();
+    //  actionSet = new HashSet<Action>();
+    //  actionSet.add(Action.fromInteger((oldAction.ordinal() + actionSize - 1) % actionSize)); //一つ左回り
+    //  actionSet.add(oldAction); // 同方向
+    //  actionSet.add(Action.fromInteger((oldAction.ordinal() + actionSize + 1) % actionSize)); //一つ右回り
+    //}
+    
+    //Action action = Action.fromInteger(newState % Action.SIZE.ordinal());
+    int lngNo = (int)floor((float)newState / Action.SIZE.ordinal()) % widthBlockNum;
+    int latNo = floor((float)newState / (Action.SIZE.ordinal() * widthBlockNum));
+    
+    actionSet = new HashSet<Action>();
+    
+    if (oldAction != Action.UP) {
+      actionSet.add(Action.BOTTOM);
     }
-
-    if (newState % widthBlockNum == 0) { //左端
+    if (oldAction != Action.BOTTOM) {
+      actionSet.add(Action.UP);
+    }
+    actionSet.add(Action.UPPER_RIGHT);
+    actionSet.add(Action.RIGHT);
+    actionSet.add(Action.BOTTOM_RIGHT);
+    
+    if (lngNo == 0) { //左端
       actionSet.remove(Action.UPPER_LEFT);
       actionSet.remove(Action.LEFT);
       actionSet.remove(Action.BOTTOM_LEFT);
@@ -533,7 +560,7 @@ class World {
         actionSet.add(Action.UP);
       }
     }
-    if (floor((float)newState / widthBlockNum) == heightBlockNum - 1) { //上端
+    if (latNo == heightBlockNum - 1) { //上端
       actionSet.remove(Action.UPPER_LEFT);
       actionSet.remove(Action.UP);
       actionSet.remove(Action.UPPER_RIGHT);
@@ -541,7 +568,7 @@ class World {
         actionSet.add(Action.RIGHT);
       }
     }
-    if (newState % widthBlockNum == widthBlockNum - 1) { //右端
+    if (lngNo == widthBlockNum - 1) { //右端
       actionSet.remove(Action.UPPER_RIGHT);
       actionSet.remove(Action.RIGHT);
       actionSet.remove(Action.BOTTOM_RIGHT);
@@ -549,7 +576,7 @@ class World {
         actionSet.add(Action.BOTTOM);
       }
     }
-    if (floor((float)newState / widthBlockNum) == 0) { //下端
+    if (latNo == 0) { //下端
       actionSet.remove(Action.BOTTOM_LEFT);
       actionSet.remove(Action.BOTTOM);
       actionSet.remove(Action.BOTTOM_RIGHT);
@@ -559,27 +586,42 @@ class World {
     }
 
     HashSet<Integer> integerSet = new HashSet<Integer>();
-    for (Action action : actionSet) {
-      integerSet.add(action.ordinal());
+    for (Action a : actionSet) {
+      integerSet.add(a.ordinal());
     }
 
     return integerSet;
   }
-
-  public int getState(RoverBase rover) {
-    LatLng latLng = rover.getCoord();
-    int stateId = floor((float)latLng.lng / oneBlockEdge) + floor((float)latLng.lat / oneBlockEdge) * widthBlockNum;     
+  
+  public int getState(RoverBase rover, Action action) {
+    LatLng latLng = rover.getCoord(); 
+    return getState(latLng, action);
+  }
+  public int getState(LatLng latLng, Action action) {
+    int lngNo = floor((float)latLng.lng / oneBlockEdge);
+    int latNo = floor((float)latLng.lat / oneBlockEdge);
+    return getState(latNo, lngNo, action);
+  }
+  public int getState(int latNo, int lngNo, Action action) {
+    int stateId = action.ordinal() + lngNo * Action.SIZE.ordinal() + latNo * widthBlockNum * Action.SIZE.ordinal();
     return stateId;
   }
 
   public LatLng stateToLatLng(int stateId) {
-    double lng = (stateId % widthBlockNum) * oneBlockEdge + (oneBlockEdge / 2);
-    double lat = floor((float)stateId / widthBlockNum) * oneBlockEdge + (oneBlockEdge / 2);
+    int lngNo = (int)floor((float)stateId / Action.SIZE.ordinal()) % widthBlockNum;
+    int latNo = floor((float)stateId / (Action.SIZE.ordinal() * widthBlockNum));
+    double lng = lngNo * oneBlockEdge + (oneBlockEdge / 2);
+    double lat = latNo * oneBlockEdge + (oneBlockEdge / 2);
     return new LatLng(lat, lng);
   }
 
   public float actionToDegree(Action action) {
     return 45.0 * action.ordinal();
+  }
+  
+  public boolean isGoal(int stateId) {
+    int lngNo = (int)floor((float)stateId / Action.SIZE.ordinal()) % widthBlockNum;
+    return lngNo == widthBlockNum - 1;
   }
 }
 
@@ -639,10 +681,11 @@ final int widthBlockNum = SCREEN_WIDTH / oneBlockEdge;
 final int heightBlockNum = SCREEN_HEIGHT / oneBlockEdge;
 
 int trainCount = 0;
+long lastTrainTime = 0;
 
 ArrayList<ArrayList<Pair<LatLng, Float>>> stateHistories = new ArrayList<ArrayList<Pair<LatLng, Float>>>();
 
-int stateCount = widthBlockNum * heightBlockNum; // マップを7m正方形で分割したのがstateの数。7mなのはGPS半径5mの誤差円の内接正方形の一辺。
+int stateCount = widthBlockNum * heightBlockNum * Action.SIZE.ordinal(); // マップを7m正方形で分割したのがstateの数。7mなのはGPS半径5mの誤差円の内接正方形の一辺。
 int actionCount = Action.SIZE.ordinal(); // 0: 上 1: 右上 で8方向
 ActorCriticLearner agent = new ActorCriticLearner(stateCount, actionCount);
 
@@ -662,7 +705,7 @@ void train() {
     }
   };
 
-  int currentState = world.getState(parentRover);
+  int currentState = world.getState(parentRover, Action.RIGHT);
   List<Move> moves = new ArrayList<Move>();
   Action oldAction = Action.RIGHT;
 
@@ -675,23 +718,27 @@ void train() {
     int oldStateId = currentState;
     moves.add(new Move(oldStateId, action, newStateId, reward));
     currentState = newStateId;
-    if (currentState % widthBlockNum == widthBlockNum - 1) {
+    if (world.isGoal(currentState)) {
       //ゴールしたらbreak
-      System.out.println("time: " + time);
       break;
     }
     oldAction = action;
   }
 
+  String s = "";
+  double allReward = 0;
   for (int i=moves.size()-1; i >= 0; --i) {
     Move next_move = moves.get(i);
     if (i != moves.size()-1) {
       next_move = moves.get(i+1);
     }
     Move current_move = moves.get(i);
+    s = (int)(current_move.reward * 100) + ", " + s;
+    allReward += current_move.reward;
     agent.update(current_move.oldState, current_move.action.ordinal(), current_move.newState, world.getActionsAvailableAtState(current_move.newState, current_move.action), current_move.reward, V);
     stateHistory.add(new Pair<LatLng, Float>(world.stateToLatLng(current_move.oldState), world.actionToDegree(current_move.action)));
   }
+  System.out.println("allReward: " + allReward + ", reward: " + s);
 
   stateHistories.add(stateHistory);
 }
