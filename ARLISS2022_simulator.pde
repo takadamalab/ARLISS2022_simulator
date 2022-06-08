@@ -14,7 +14,7 @@ import javafx.util.Pair;
 * Processing描画関数 =======================
  */
 
-long lastMillisTime;
+long lastMillisTime = -1;
 final int SCREEN_WIDTH = 975;
 final int SCREEN_HEIGHT = 350;
 final int PIXEL_PER_METER = 5; // ピクセル数/m
@@ -32,7 +32,6 @@ void settings() {
 
 void setup() {
   background(255); // 背景色を設定
-  lastMillisTime = millis();
   noStroke(); // 図形の輪郭線を消す
 
   // マップ初期化
@@ -55,6 +54,12 @@ final int COMMAND_TEXT_WIDTH = 200;
 
 // setup()実行後に繰り返し実行される処理
 void draw() {
+  if (lastMillisTime == -1) {
+    //　初回はテキストロードで時間がかかるので、それだけ先に処理させる
+    text(COMMAND_TEXT, SCREEN_WIDTH - COMMAND_TEXT_WIDTH, 0, COMMAND_TEXT_WIDTH, SCREEN_HEIGHT);
+    lastMillisTime = millis(); 
+    return;
+  }
   long currentMillisTime = millis(); 
   double deltaT = (currentMillisTime - lastMillisTime) / 1000.0;
 
@@ -85,20 +90,22 @@ void draw() {
   // ミッション系実行
   double goalLineLng = SCREEN_WIDTH - parentRover.getGpsError() * PIXEL_PER_METER *  3;
   if (mode == Mode.STAY_PARENT_AND_CHILDREN) {
-    // 初期位置は設定済みなのでそのまま探索開始
-    for (ChildRover childRover : childrenRovers) {
-      childRover.velocity = 8 * PIXEL_PER_METER;
+    // 初期位置は設定済みなのでそのまま探索開始 
+    if (currentMillisTime < 5000) {
+      for (ChildRover childRover : childrenRovers) {
       switch(searchMode) { // 探索モードで行動変化
-      case STRAIGHT:
-        childRover.targetAzimuth = 90;
-        break;
-      case ZIGZAG:
-        // TODO: ジグザクの実装
-        childRover.targetCoord = new LatLng(SCREEN_HEIGHT / 2, goalLineLng);
-        break;
+        case STRAIGHT:
+          childRover.targetAzimuth = 90;
+          childRover.velocity = 8 * PIXEL_PER_METER;
+          break;
+        case ZIGZAG:
+          // TODO: ジグザクの実装
+          childRover.targetCoord = new LatLng(SCREEN_HEIGHT / 2, goalLineLng);
+          break;
+        }
       }
+      mode = Mode.CHILDREN_SERACH;
     }
-    mode = Mode.CHILDREN_SERACH;
   } else if (mode == Mode.CHILDREN_SERACH) {
     switch(searchMode) { // 探索モードで行動変化
     case STRAIGHT:
@@ -112,7 +119,6 @@ void draw() {
       break;
     case ZIGZAG:
       for (ChildRover childRover : childrenRovers) {
-
         childRover.targetCoord = new LatLng(SCREEN_HEIGHT / 2, goalLineLng);
         if (childRover.isOnTargetPosition() && !finishedSearchRoverIds.contains(childRover.id)) {
           finishedSearchRoverIds.add(childRover.id);
@@ -436,21 +442,6 @@ final int CHILDREN_ROVERS_NUM = 5;
 
 class World {
   public int update(ActorCriticLearner agent, Action action, int stateId) {
-    //public Pair<Integer, Action> update(ActorCriticLearner agent, Action action, int stateId) {
-    // 壁対策(回避は右回りで統一)
-    //if (stateId % widthBlockNum == 0 && (action == Action.UPPER_LEFT || action == Action.LEFT || action == Action.BOTTOM_LEFT)){ //左端
-    //  return update(agent, Action.UP, stateId);
-    //}
-    //if ((int)(stateId / widthBlockNum) == heightBlockNum - 1 && (action == Action.UPPER_LEFT || action == Action.UP || action == Action.UPPER_RIGHT)){ //上端
-    //  return update(agent, Action.RIGHT, stateId);
-    //}
-    //if (stateId % widthBlockNum == widthBlockNum - 1 && (action == Action.UPPER_RIGHT || action == Action.RIGHT || action == Action.BOTTOM_RIGHT)){ //右端
-    //  return update(agent, Action.BOTTOM, stateId);
-    //}
-    //if ((int)(stateId / widthBlockNum) == 0 && (action == Action.BOTTOM_LEFT || action == Action.BOTTOM || action == Action.BOTTOM_RIGHT)){ //下端
-    //  return update(agent, Action.LEFT, stateId);
-    //}
-
     switch(action) {
     case UP:
       stateId += widthBlockNum;
@@ -494,7 +485,7 @@ class World {
     }
 
     if (boundingRecords.isEmpty()) {
-      return -1;
+      return stateId % widthBlockNum <= 8 ? 0 : -0.2;
     }
 
     double weightSum = 0;
@@ -513,34 +504,58 @@ class World {
       weightSum += weight;
     }
 
-    reward += 10 / weightSum * accelZVarianceWeightSum;
+    reward += 100 / weightSum * accelZVarianceWeightSum - 5;
+    System.out.println("a: " + (100 / weightSum * accelZVarianceWeightSum - 5));
 
     return reward;
   }
 
-  public Set<Integer> getActionsAvailableAtState(int newState) {
-    HashSet<Action> actionSet = new HashSet<Action>(Arrays.asList(Action.values()));
-    actionSet.remove(Action.SIZE);
+  public Set<Integer> getActionsAvailableAtState(int newState, Action oldAction) {
+    HashSet<Action> actionSet;
+    if (oldAction == null) {
+      // 全アクション生成
+      actionSet = new HashSet<Action>(Arrays.asList(Action.values()));
+      actionSet.remove(Action.SIZE);
+    } else {
+      // 前回のActionから近いアクションを生成する
+      int actionSize = Action.SIZE.ordinal();
+      actionSet = new HashSet<Action>();
+      actionSet.add(Action.fromInteger((oldAction.ordinal() + actionSize - 1) % actionSize)); //一つ左回り
+      actionSet.add(oldAction); // 同方向
+      actionSet.add(Action.fromInteger((oldAction.ordinal() + actionSize + 1) % actionSize)); //一つ右回り
+    }
 
     if (newState % widthBlockNum == 0) { //左端
       actionSet.remove(Action.UPPER_LEFT);
       actionSet.remove(Action.LEFT);
       actionSet.remove(Action.BOTTOM_LEFT);
+      if (actionSet.isEmpty()) { // 空なら右回りで一つ足す
+        actionSet.add(Action.UP);
+      }
     }
     if (floor((float)newState / widthBlockNum) == heightBlockNum - 1) { //上端
       actionSet.remove(Action.UPPER_LEFT);
       actionSet.remove(Action.UP);
       actionSet.remove(Action.UPPER_RIGHT);
+      if (actionSet.isEmpty()) { // 空なら右回りで一つ足す
+        actionSet.add(Action.RIGHT);
+      }
     }
     if (newState % widthBlockNum == widthBlockNum - 1) { //右端
       actionSet.remove(Action.UPPER_RIGHT);
       actionSet.remove(Action.RIGHT);
       actionSet.remove(Action.BOTTOM_RIGHT);
+      if (actionSet.isEmpty()) { // 空なら右回りで一つ足す
+        actionSet.add(Action.BOTTOM);
+      }
     }
     if (floor((float)newState / widthBlockNum) == 0) { //下端
       actionSet.remove(Action.BOTTOM_LEFT);
       actionSet.remove(Action.BOTTOM);
       actionSet.remove(Action.BOTTOM_RIGHT);
+      if (actionSet.isEmpty()) { // 空なら右回りで一つ足す
+        actionSet.add(Action.LEFT);
+      }
     }
 
     HashSet<Integer> integerSet = new HashSet<Integer>();
@@ -571,14 +586,14 @@ class World {
 // 行動
 enum Action {
   UP, 
-    UPPER_RIGHT, 
-    RIGHT, 
-    BOTTOM_RIGHT, 
-    BOTTOM, 
-    BOTTOM_LEFT, 
-    LEFT, 
-    UPPER_LEFT, 
-    SIZE;
+  UPPER_RIGHT, 
+  RIGHT, 
+  BOTTOM_RIGHT, 
+  BOTTOM, 
+  BOTTOM_LEFT, 
+  LEFT, 
+  UPPER_LEFT, 
+  SIZE;
 
   public static Action fromInteger(int x) {
     switch(x) {
@@ -649,10 +664,11 @@ void train() {
 
   int currentState = world.getState(parentRover);
   List<Move> moves = new ArrayList<Move>();
+  Action oldAction = Action.RIGHT;
 
   for (int time=0; time < 10000; ++time) {
-    Action action = Action.fromInteger(agent.selectAction(currentState, world.getActionsAvailableAtState(currentState)));
-    //System.out.println("Agent does action-"+action);
+    Action action = Action.fromInteger(agent.selectAction(currentState, world.getActionsAvailableAtState(currentState, oldAction)));
+    // System.out.println("Agent does action-"+action);
 
     int newStateId = world.update(agent, action, currentState);
     double reward = world.reward(agent, currentState, action, records);
@@ -664,6 +680,7 @@ void train() {
       System.out.println("time: " + time);
       break;
     }
+    oldAction = action;
   }
 
   for (int i=moves.size()-1; i >= 0; --i) {
@@ -672,7 +689,7 @@ void train() {
       next_move = moves.get(i+1);
     }
     Move current_move = moves.get(i);
-    agent.update(current_move.oldState, current_move.action.ordinal(), current_move.newState, world.getActionsAvailableAtState(current_move.newState), current_move.reward, V);
+    agent.update(current_move.oldState, current_move.action.ordinal(), current_move.newState, world.getActionsAvailableAtState(current_move.newState, current_move.action), current_move.reward, V);
     stateHistory.add(new Pair<LatLng, Float>(world.stateToLatLng(current_move.oldState), world.actionToDegree(current_move.action)));
   }
 
