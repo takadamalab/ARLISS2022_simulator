@@ -93,7 +93,7 @@ void draw() {
     // 初期位置は設定済みなのでそのまま探索開始 
     if (currentMillisTime < 5000) {
       for (ChildRover childRover : childrenRovers) {
-      switch(searchMode) { // 探索モードで行動変化
+        switch(searchMode) { // 探索モードで行動変化
         case STRAIGHT:
           childRover.targetAzimuth = 90;
           childRover.velocity = 8 * PIXEL_PER_METER;
@@ -442,10 +442,11 @@ final int CHILDREN_ROVERS_NUM = 5;
  */
 
 class World {
+  private ArrayList<SearchRecord> records = null;
   public int update(ActorCriticLearner agent, Action action, int stateId) {
     int lngNo = (int)floor((float)stateId / Action.SIZE.ordinal()) % widthBlockNum;
     int latNo = floor((float)stateId / (Action.SIZE.ordinal() * widthBlockNum));
-    
+
     switch(action) {
     case UP:
       latNo += 1;
@@ -482,7 +483,7 @@ class World {
     return getState(latNo, lngNo, action);
   }
 
-  public double reward(ActorCriticLearner agent, int stateId, Action action, ArrayList<SearchRecord> records) {
+  public double reward(ActorCriticLearner agent, int stateId, Action action) {
     LatLng latLng = stateToLatLng(stateId);
     ArrayList<SearchRecord> boundingRecords = findBoundingRecord(latLng, records);
 
@@ -511,9 +512,9 @@ class World {
       accelZVarianceWeightSum += record.accelZVariance * weight;
       weightSum += weight;
     }
-    
+
     double weightAve = weightSum / accelZVarianceWeightSum;
-    
+
     // System.out.println("weightAve: " + weightAve + ", finalReward:" + (10 / (weightAve * weightAve) - 0.2));
 
     reward += 10 / (weightAve * weightAve);
@@ -535,13 +536,13 @@ class World {
     //  actionSet.add(oldAction); // 同方向
     //  actionSet.add(Action.fromInteger((oldAction.ordinal() + actionSize + 1) % actionSize)); //一つ右回り
     //}
-    
+
     //Action action = Action.fromInteger(newState % Action.SIZE.ordinal());
     int lngNo = (int)floor((float)newState / Action.SIZE.ordinal()) % widthBlockNum;
     int latNo = floor((float)newState / (Action.SIZE.ordinal() * widthBlockNum));
-    
+
     actionSet = new HashSet<Action>();
-    
+
     if (oldAction != Action.UP) {
       actionSet.add(Action.BOTTOM);
     }
@@ -551,7 +552,7 @@ class World {
     actionSet.add(Action.UPPER_RIGHT);
     actionSet.add(Action.RIGHT);
     actionSet.add(Action.BOTTOM_RIGHT);
-    
+
     if (lngNo == 0) { //左端
       actionSet.remove(Action.UPPER_LEFT);
       actionSet.remove(Action.LEFT);
@@ -592,7 +593,7 @@ class World {
 
     return integerSet;
   }
-  
+
   public int getState(RoverBase rover, Action action) {
     LatLng latLng = rover.getCoord(); 
     return getState(latLng, action);
@@ -607,6 +608,10 @@ class World {
     return stateId;
   }
 
+  public void setSearchRecords(ArrayList<SearchRecord> records) {
+    this.records = records;
+  }
+
   public LatLng stateToLatLng(int stateId) {
     int lngNo = (int)floor((float)stateId / Action.SIZE.ordinal()) % widthBlockNum;
     int latNo = floor((float)stateId / (Action.SIZE.ordinal() * widthBlockNum));
@@ -618,24 +623,58 @@ class World {
   public float actionToDegree(Action action) {
     return 45.0 * action.ordinal();
   }
-  
+
   public boolean isGoal(int stateId) {
     int lngNo = (int)floor((float)stateId / Action.SIZE.ordinal()) % widthBlockNum;
     return lngNo == widthBlockNum - 1;
+  }
+
+  public Function<Integer, Double> getValueFunction() {
+    return new Function<Integer, Double>() { // 参考: https://github.com/chen0040/java-reinforcement-learning/blob/f85cb03e5d16512f6bb9e126fa940b9e49d5bde7/src/main/java/com/github/chen0040/rl/learning/actorcritic/ActorCriticLearner.java#L85
+      @Override
+        public Double apply(Integer stateId) {
+        Action action = Action.fromInteger(stateId % Action.SIZE.ordinal());
+        LatLng latLng = stateToLatLng(stateId);
+        ArrayList<SearchRecord> boundingRecords = findBoundingRecord(latLng, records);
+
+        if (boundingRecords.isEmpty()) {
+          return new Double(-0.2);
+        }
+
+        double weightSum = 0;
+        double accelZVarianceWeightSum = 0;
+        double currentAzimuth = actionToDegree(action);
+        for (SearchRecord record : boundingRecords) {
+          double azimuthDiff = record.azimuth - currentAzimuth;
+          while (azimuthDiff < -180) {
+            azimuthDiff += 360;
+          }
+          while (azimuthDiff > 180) {
+            azimuthDiff -= 360;
+          }
+          float weight = 180 - abs((float)azimuthDiff);
+          accelZVarianceWeightSum += record.accelZVariance * weight;
+          weightSum += weight;
+        }
+
+        double weightAve = weightSum / accelZVarianceWeightSum;
+        return new Double(weightAve);
+      }
+    };
   }
 }
 
 // 行動
 enum Action {
   UP, 
-  UPPER_RIGHT, 
-  RIGHT, 
-  BOTTOM_RIGHT, 
-  BOTTOM, 
-  BOTTOM_LEFT, 
-  LEFT, 
-  UPPER_LEFT, 
-  SIZE;
+    UPPER_RIGHT, 
+    RIGHT, 
+    BOTTOM_RIGHT, 
+    BOTTOM, 
+    BOTTOM_LEFT, 
+    LEFT, 
+    UPPER_LEFT, 
+    SIZE;
 
   public static Action fromInteger(int x) {
     switch(x) {
@@ -698,12 +737,8 @@ void train() {
   }
 
   World world = new World();
-  Function<Integer, Double> V = new  Function<Integer, Double>() { // 参考: https://github.com/chen0040/java-reinforcement-learning/blob/f85cb03e5d16512f6bb9e126fa940b9e49d5bde7/src/main/java/com/github/chen0040/rl/learning/actorcritic/ActorCriticLearner.java#L85
-    @Override
-      public Double apply(Integer value) {
-      return new Double(0); // TODO
-    }
-  };
+  world.setSearchRecords(records);
+  Function<Integer, Double> V = world.getValueFunction();
 
   int currentState = world.getState(parentRover, Action.RIGHT);
   List<Move> moves = new ArrayList<Move>();
@@ -714,7 +749,7 @@ void train() {
     // System.out.println("Agent does action-"+action);
 
     int newStateId = world.update(agent, action, currentState);
-    double reward = world.reward(agent, currentState, action, records);
+    double reward = world.reward(agent, currentState, action);
     int oldStateId = currentState;
     moves.add(new Move(oldStateId, action, newStateId, reward));
     currentState = newStateId;
