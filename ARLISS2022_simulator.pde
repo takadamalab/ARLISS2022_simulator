@@ -19,7 +19,7 @@ final int SCREEN_WIDTH = 975;
 final int SCREEN_HEIGHT = 350;
 final int PIXEL_PER_METER = 5; // ピクセル数/m
 
-final String mapImageFileName = "map2.jpg";
+final String mapImageFileName = "map.jpg";
 PImage mapImage;
 boolean isShowMap = true;
 boolean isShowGrid = true;
@@ -139,7 +139,10 @@ void draw() {
   } else if (mode == Mode.CARRY_PARENT) {
     if (currentMillisTime - lastTrainTime > 0 && trainCount < 10000) {
       System.out.println("train: " + trainCount + "/1000");
-      train();
+      // train();
+      if ( trainCount == 0){
+        dijkstra();
+      }
       trainCount++;
       lastTrainTime = currentMillisTime;
     }
@@ -778,6 +781,118 @@ void train() {
   stateHistories.add(stateHistory);
 }
 
+final public class CoordinateComparator implements Comparator<Pair<Double, LatLng>> {
+  public int compare(Pair<Double, LatLng> obj1, Pair<Double, LatLng> obj2) {
+    Pair<Double, LatLng> p1 = (Pair<Double, LatLng>)obj1;
+    Pair<Double, LatLng> p2 = (Pair<Double, LatLng>)obj2;
+
+    if (p1.getKey() > p2.getKey()) {
+      return 1;
+    } else {
+      return -1;
+    }
+  }
+}
+
+int latLng2Int(LatLng latLng) {
+  return (int)(floor((float)latLng.lng / oneBlockEdge) * heightBlockNum + (int)floor((float)latLng.lat / oneBlockEdge));
+}
+
+void dijkstra() {
+  Double[] cost = new Double[widthBlockNum * heightBlockNum];
+  Double[] weightSum = new Double[widthBlockNum * heightBlockNum];
+  Double[] costSum = new Double[widthBlockNum * heightBlockNum];
+  Arrays.fill(cost, (double)0.0);
+  Arrays.fill(weightSum, (double)0.0);
+  Arrays.fill(costSum, (double)0.0);
+  Double[] sigma = {(double)0.1, (double)0.1};
+  for (ChildRover rover : childrenRovers) {
+    for (SearchRecord record : rover.getRecords()) {
+      int h = floor((float)record.lat / oneBlockEdge), w = floor((float)record.lng / oneBlockEdge);
+      for (int i = -1; i < 2; i++) {
+        for (int j = -1; j < 2; j++) {
+          if(0 <= w + i && w + i < widthBlockNum && 0 <= h + j && h + j < heightBlockNum){
+            double weight = (1 - bivariateNormalDistribution((w + i + 0.5) * oneBlockEdge, (h + j + 0.5) * oneBlockEdge, new Double[]{record.lng, record.lat}, sigma));
+            weightSum[(w + i) * heightBlockNum + h + j] += weight;
+            costSum[(w + i) * heightBlockNum + h + j] += weight * record.accelZVariance;
+          }
+        }
+      }
+    }
+  }
+  for (int i = 0; i < widthBlockNum; i++) {
+    for (int j = 0; j < heightBlockNum; j++) {
+      if (weightSum[i * heightBlockNum + j] != 0.0){
+        cost[i * heightBlockNum + j] = costSum[i * heightBlockNum + j] / weightSum[i * heightBlockNum + j] * 100;
+      } else {
+        cost[i * heightBlockNum + j] = (double)1000;
+      }
+    }
+  }
+  println(widthBlockNum, heightBlockNum);
+  // println(Arrays.deepToString(cost));
+  for (int i = 0; i < heightBlockNum; i++) {
+    for (int j = 0; j < widthBlockNum; j++) {
+      print(String.format("%4d", Math.round(cost[i + j * heightBlockNum])), ", ");
+    }
+    println();
+  }
+  Queue qu = new PriorityQueue<Pair<Double, LatLng>>(new CoordinateComparator());
+  qu.add(new Pair<Double, LatLng>((double)0.0, parentRover.getPosition()));
+  Integer[] prevIdx = new Integer[widthBlockNum * heightBlockNum];
+  Arrays.fill(prevIdx, -1);
+  Double[] graph = new Double[widthBlockNum * heightBlockNum];
+  Arrays.fill(graph, (double)1000000000.0);
+  graph[latLng2Int(parentRover.getPosition())] = (double)0;
+  while (!qu.isEmpty()) {
+    Pair<Double, LatLng> p = (Pair<Double, LatLng>)qu.poll();
+
+    int h = floor((float)p.getValue().lat / oneBlockEdge), w = floor((float)p.getValue().lng / oneBlockEdge);
+    // println(w, h);
+    for (int i = -1; i < 2; i++) {
+      for (int j = -1; j < 2; j++) {
+        if ((i == 0 && j == 0) || w + i < 0 || w + i >= widthBlockNum || h + j < 0 || h + j >= heightBlockNum) {
+          continue;
+        }
+        int idx = (w + i) * heightBlockNum + h + j;
+        Double newCost = p.getKey() + cost[idx];
+        if (newCost < graph[idx]) {
+          graph[idx] = newCost;
+          qu.add(new Pair<Double, LatLng>(newCost, new LatLng((h + j) * oneBlockEdge, (w + i) * oneBlockEdge)));
+          prevIdx[idx] = w * heightBlockNum + h;
+          // println("(" , w, ", ", h, ") -> (", w + i, ", ", h + j, "): ", newCost);
+        }
+      }
+    }
+  }
+  println("-------------------------------------------------------");
+  for (int i = 0; i < heightBlockNum; i++) {
+    for (int j = 0; j < widthBlockNum; j++) {
+      print(String.format("%4d", Math.round(graph[i + j * heightBlockNum])), ", ");
+    }
+    println();
+  }
+  println("-------------------------------------------------------");
+  for (int i = 0; i < heightBlockNum; i++) {
+    for (int j = 0; j < widthBlockNum; j++) {
+      print(prevIdx[i + j * heightBlockNum], ", ");
+    }
+    println();
+  }
+  ArrayList<Pair<LatLng, Float>> stateHistory = new ArrayList<Pair<LatLng, Float>>();
+  LatLng goalCoord = new LatLng((heightBlockNum - 1) / 2 * oneBlockEdge, (widthBlockNum - 1) * oneBlockEdge);
+  stateHistory.add(new Pair<LatLng, Float>(goalCoord, (float)0));
+  int idx = latLng2Int(stateHistory.get(stateHistory.size() - 1).getKey());
+  println(idx);
+  while (prevIdx[idx] != -1) {
+    idx = prevIdx[idx];
+    println(idx);
+    stateHistory.add(new Pair<LatLng, Float>(new LatLng((idx % heightBlockNum + 0.5) * oneBlockEdge, (int)(idx / heightBlockNum + 0.5) * oneBlockEdge), (float)0));
+  }
+  Collections.reverse(stateHistory);
+  stateHistories.add(stateHistory);
+}
+
 void test() {
 }
 
@@ -829,4 +944,8 @@ float variance(ArrayList<Double> x) {
 // 標準偏差
 float standardDeviation(ArrayList<Double> x) {
   return sqrt(variance(x));
+}
+
+double bivariateNormalDistribution(double x, double y, Double[] mu, Double[] sigma) {
+  return Math.exp(-(Math.pow(x - mu[0], 2) / Math.pow(sigma[0], 2) + Math.pow(y - mu[1], 2) / Math.pow(sigma[1], 2))/(2 * Math.pow(sigma[0], 2) * Math.pow(sigma[1], 2))) / (2 * Math.PI * sigma[0] * sigma[1]);
 }
