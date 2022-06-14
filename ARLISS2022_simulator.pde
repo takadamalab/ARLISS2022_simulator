@@ -19,7 +19,7 @@ final int SCREEN_WIDTH = 975;
 final int SCREEN_HEIGHT = 350;
 final int PIXEL_PER_METER = 5; // ピクセル数/m
 
-final String mapImageFileName = "map2.jpg";
+final String mapImageFileName = "map3.jpg";
 PImage mapImage;
 boolean isShowMap = true;
 boolean isShowGrid = true;
@@ -435,7 +435,7 @@ class ChildRover extends RoverBase {
 
 ParentRover parentRover;
 ArrayList<ChildRover> childrenRovers;
-final int CHILDREN_ROVERS_NUM = 5;
+final int CHILDREN_ROVERS_NUM = 7;
 
 /*
 * 強化学習 =======================
@@ -483,43 +483,8 @@ class World {
     return getState(latNo, lngNo, action);
   }
 
-  public double reward(ActorCriticLearner agent, int stateId, Action action) {
-    LatLng latLng = stateToLatLng(stateId);
-    ArrayList<SearchRecord> boundingRecords = findBoundingRecord(latLng, records);
-
-    double reward = 0;
-    // ゴール！
-    //if ((stateId / Action.SIZE.ordinal()) % widthBlockNum == widthBlockNum - 1) {
-    //  reward += 1000;
-    //}
-
-    if (boundingRecords.isEmpty()) {
-      return floor((float)stateId / Action.SIZE.ordinal()) % widthBlockNum <= 4 ? 0 : -0.2;
-    }
-
-    double weightSum = 0;
-    double accelZVarianceWeightSum = 0;
-    double currentAzimuth = actionToDegree(action);
-    for (SearchRecord record : boundingRecords) {
-      double azimuthDiff = record.azimuth - currentAzimuth;
-      while (azimuthDiff < -180) {
-        azimuthDiff += 360;
-      }
-      while (azimuthDiff > 180) {
-        azimuthDiff -= 360;
-      }
-      float weight = 180 - abs((float)azimuthDiff);
-      accelZVarianceWeightSum += record.accelZVariance * weight;
-      weightSum += weight;
-    }
-
-    double weightAve = weightSum / accelZVarianceWeightSum;
-
-    // System.out.println("weightAve: " + weightAve + ", finalReward:" + (10 / (weightAve * weightAve) - 0.2));
-
-    reward += 10 / (weightAve * weightAve);
-
-    return reward;
+  public double reward(ActorCriticLearner agent, int stateId, Action action, Action oldAction) {
+    return 0;
   }
 
   public Set<Integer> getActionsAvailableAtState(int newState, Action oldAction) {
@@ -548,10 +513,11 @@ class World {
     }
     if (oldAction != Action.BOTTOM) {
       actionSet.add(Action.UP);
+      
     }
-    actionSet.add(Action.UPPER_RIGHT);
-    actionSet.add(Action.RIGHT);
     actionSet.add(Action.BOTTOM_RIGHT);
+    actionSet.add(Action.RIGHT);
+    actionSet.add(Action.UPPER_RIGHT);
 
     if (lngNo == 0) { //左端
       actionSet.remove(Action.UPPER_LEFT);
@@ -638,7 +604,8 @@ class World {
         ArrayList<SearchRecord> boundingRecords = findBoundingRecord(latLng, records);
 
         if (boundingRecords.isEmpty()) {
-          return new Double(-0.2);
+          //return new Double(latLng.lng <= 100 ? 0 : -1);
+          return new Double(-1);
         }
 
         double weightSum = 0;
@@ -744,12 +711,12 @@ void train() {
   List<Move> moves = new ArrayList<Move>();
   Action oldAction = Action.RIGHT;
 
-  for (int time=0; time < 10000; ++time) {
+  for (int time=0; time < 1000; ++time) {
     Action action = Action.fromInteger(agent.selectAction(currentState, world.getActionsAvailableAtState(currentState, oldAction)));
     // System.out.println("Agent does action-"+action);
 
     int newStateId = world.update(agent, action, currentState);
-    double reward = world.reward(agent, currentState, action);
+    double reward = world.reward(agent, currentState, action, oldAction);
     int oldStateId = currentState;
     moves.add(new Move(oldStateId, action, newStateId, reward));
     currentState = newStateId;
@@ -760,20 +727,15 @@ void train() {
     oldAction = action;
   }
 
-  String s = "";
-  double allReward = 0;
   for (int i=moves.size()-1; i >= 0; --i) {
     Move next_move = moves.get(i);
     if (i != moves.size()-1) {
       next_move = moves.get(i+1);
     }
     Move current_move = moves.get(i);
-    s = (int)(current_move.reward * 100) + ", " + s;
-    allReward += current_move.reward;
     agent.update(current_move.oldState, current_move.action.ordinal(), current_move.newState, world.getActionsAvailableAtState(current_move.newState, current_move.action), current_move.reward, V);
     stateHistory.add(new Pair<LatLng, Float>(world.stateToLatLng(current_move.oldState), world.actionToDegree(current_move.action)));
   }
-  System.out.println("allReward: " + allReward + ", reward: " + s);
 
   stateHistories.add(stateHistory);
 }
