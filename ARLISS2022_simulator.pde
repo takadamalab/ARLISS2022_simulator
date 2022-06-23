@@ -25,6 +25,7 @@ boolean isShowMap = true;
 boolean isShowGrid = true;
 boolean isShowAccelZ = false;
 
+
 // プログラム開始時に一度だけ実行される処理
 void settings() {
   size(SCREEN_WIDTH, SCREEN_HEIGHT);  // 画面サイズを設定
@@ -137,14 +138,19 @@ void draw() {
     // 省略(実機では通信などでデータを送る必要がある)
     mode = Mode.CARRY_PARENT;
   } else if (mode == Mode.CARRY_PARENT) {
-    if (currentMillisTime - lastTrainTime > 0 && trainCount < 10000) {
-      System.out.println("train: " + trainCount + "/1000");
-      // train();
-      if ( trainCount == 0){
-        dijkstra();
+    switch(pathfindingMethod) {
+    case ACTOR_CRITIC:
+      if (currentMillisTime - lastTrainTime > 0 && trainCount < 10000) {
+        System.out.println("train: " + trainCount + "/10000");
+        train();
+        trainCount++;
+
+        lastTrainTime = currentMillisTime;
       }
-      trainCount++;
-      lastTrainTime = currentMillisTime;
+      break;
+    case DIJKSTRA:
+      dijkstra();
+      break;
     }
   }
 
@@ -236,6 +242,12 @@ enum Mode { // 全体のモード
     CALL_CHILDREN_AFTER_CARRY,
 };
 Mode mode = Mode.STAY_PARENT_AND_CHILDREN;
+
+enum PathfindingMethod {
+  ACTOR_CRITIC, 
+    DIJKSTRA
+}
+PathfindingMethod pathfindingMethod = PathfindingMethod.DIJKSTRA;
 
 enum SearchMode {
   STRAIGHT, // 直進
@@ -438,10 +450,10 @@ class ChildRover extends RoverBase {
 
 ParentRover parentRover;
 ArrayList<ChildRover> childrenRovers;
-final int CHILDREN_ROVERS_NUM = 5;
+final int CHILDREN_ROVERS_NUM = 7;
 
 /*
-* 強化学習 =======================
+* 経路探索 =======================
  */
 
 class World {
@@ -486,43 +498,8 @@ class World {
     return getState(latNo, lngNo, action);
   }
 
-  public double reward(ActorCriticLearner agent, int stateId, Action action) {
-    LatLng latLng = stateToLatLng(stateId);
-    ArrayList<SearchRecord> boundingRecords = findBoundingRecord(latLng, records);
-
-    double reward = 0;
-    // ゴール！
-    //if ((stateId / Action.SIZE.ordinal()) % widthBlockNum == widthBlockNum - 1) {
-    //  reward += 1000;
-    //}
-
-    if (boundingRecords.isEmpty()) {
-      return floor((float)stateId / Action.SIZE.ordinal()) % widthBlockNum <= 4 ? 0 : -0.2;
-    }
-
-    double weightSum = 0;
-    double accelZVarianceWeightSum = 0;
-    double currentAzimuth = actionToDegree(action);
-    for (SearchRecord record : boundingRecords) {
-      double azimuthDiff = record.azimuth - currentAzimuth;
-      while (azimuthDiff < -180) {
-        azimuthDiff += 360;
-      }
-      while (azimuthDiff > 180) {
-        azimuthDiff -= 360;
-      }
-      float weight = 180 - abs((float)azimuthDiff);
-      accelZVarianceWeightSum += record.accelZVariance * weight;
-      weightSum += weight;
-    }
-
-    double weightAve = weightSum / accelZVarianceWeightSum;
-
-    // System.out.println("weightAve: " + weightAve + ", finalReward:" + (10 / (weightAve * weightAve) - 0.2));
-
-    reward += 10 / (weightAve * weightAve);
-
-    return reward;
+  public double reward(ActorCriticLearner agent, int stateId, Action action, Action oldAction) {
+    return 0;
   }
 
   public Set<Integer> getActionsAvailableAtState(int newState, Action oldAction) {
@@ -552,9 +529,9 @@ class World {
     if (oldAction != Action.BOTTOM) {
       actionSet.add(Action.UP);
     }
-    actionSet.add(Action.UPPER_RIGHT);
-    actionSet.add(Action.RIGHT);
     actionSet.add(Action.BOTTOM_RIGHT);
+    actionSet.add(Action.RIGHT);
+    actionSet.add(Action.UPPER_RIGHT);
 
     if (lngNo == 0) { //左端
       actionSet.remove(Action.UPPER_LEFT);
@@ -641,7 +618,8 @@ class World {
         ArrayList<SearchRecord> boundingRecords = findBoundingRecord(latLng, records);
 
         if (boundingRecords.isEmpty()) {
-          return new Double(-0.2);
+          //return new Double(latLng.lng <= 100 ? 0 : -1);
+          return new Double(-1);
         }
 
         double weightSum = 0;
@@ -747,12 +725,12 @@ void train() {
   List<Move> moves = new ArrayList<Move>();
   Action oldAction = Action.RIGHT;
 
-  for (int time=0; time < 10000; ++time) {
+  for (int time=0; time < 1000; ++time) {
     Action action = Action.fromInteger(agent.selectAction(currentState, world.getActionsAvailableAtState(currentState, oldAction)));
     // System.out.println("Agent does action-"+action);
 
     int newStateId = world.update(agent, action, currentState);
-    double reward = world.reward(agent, currentState, action);
+    double reward = world.reward(agent, currentState, action, oldAction);
     int oldStateId = currentState;
     moves.add(new Move(oldStateId, action, newStateId, reward));
     currentState = newStateId;
@@ -763,20 +741,15 @@ void train() {
     oldAction = action;
   }
 
-  String s = "";
-  double allReward = 0;
   for (int i=moves.size()-1; i >= 0; --i) {
     Move next_move = moves.get(i);
     if (i != moves.size()-1) {
       next_move = moves.get(i+1);
     }
     Move current_move = moves.get(i);
-    s = (int)(current_move.reward * 100) + ", " + s;
-    allReward += current_move.reward;
     agent.update(current_move.oldState, current_move.action.ordinal(), current_move.newState, world.getActionsAvailableAtState(current_move.newState, current_move.action), current_move.reward, V);
     stateHistory.add(new Pair<LatLng, Float>(world.stateToLatLng(current_move.oldState), world.actionToDegree(current_move.action)));
   }
-  System.out.println("allReward: " + allReward + ", reward: " + s);
 
   stateHistories.add(stateHistory);
 }
@@ -798,6 +771,9 @@ int latLng2Int(LatLng latLng) {
   return (int)(floor((float)latLng.lng / oneBlockEdge) * heightBlockNum + (int)floor((float)latLng.lat / oneBlockEdge));
 }
 
+void test() {
+}
+
 void dijkstra() {
   Double[] cost = new Double[widthBlockNum * heightBlockNum];
   Double[] weightSum = new Double[widthBlockNum * heightBlockNum];
@@ -811,7 +787,7 @@ void dijkstra() {
       int h = floor((float)record.lat / oneBlockEdge), w = floor((float)record.lng / oneBlockEdge);
       for (int i = -1; i < 2; i++) {
         for (int j = -1; j < 2; j++) {
-          if(0 <= w + i && w + i < widthBlockNum && 0 <= h + j && h + j < heightBlockNum){
+          if (0 <= w + i && w + i < widthBlockNum && 0 <= h + j && h + j < heightBlockNum) {
             double weight = (1 - bivariateNormalDistribution((w + i + 0.5) * oneBlockEdge, (h + j + 0.5) * oneBlockEdge, new Double[]{record.lng, record.lat}, sigma));
             weightSum[(w + i) * heightBlockNum + h + j] += weight;
             costSum[(w + i) * heightBlockNum + h + j] += weight * record.accelZVariance;
@@ -822,7 +798,7 @@ void dijkstra() {
   }
   for (int i = 0; i < widthBlockNum; i++) {
     for (int j = 0; j < heightBlockNum; j++) {
-      if (weightSum[i * heightBlockNum + j] != 0.0){
+      if (weightSum[i * heightBlockNum + j] != 0.0) {
         cost[i * heightBlockNum + j] = costSum[i * heightBlockNum + j] / weightSum[i * heightBlockNum + j] * 100;
       } else {
         cost[i * heightBlockNum + j] = (double)1000;
@@ -891,9 +867,6 @@ void dijkstra() {
   }
   Collections.reverse(stateHistory);
   stateHistories.add(stateHistory);
-}
-
-void test() {
 }
 
 ArrayList<SearchRecord> findBoundingRecord(final LatLng latLng, ArrayList<SearchRecord> records) {
