@@ -1,11 +1,3 @@
-import com.github.chen0040.rl.actionselection.*;
-import com.github.chen0040.rl.learning.actorcritic.*;
-import com.github.chen0040.rl.learning.qlearn.*;
-import com.github.chen0040.rl.learning.rlearn.*;
-import com.github.chen0040.rl.learning.sarsa.*;
-import com.github.chen0040.rl.models.*;
-import com.github.chen0040.rl.utils.*;
-
 import java.util.*;
 import java.util.function.Function;
 import javafx.util.Pair;
@@ -205,7 +197,7 @@ void draw() {
     case ACTOR_CRITIC:
       if (currentMillisTime - lastTrainTime > 0 && trainCount < 10000) {
         System.out.println("train: " + trainCount + "/10000");
-        train();
+        //train(); // 削除
         trainCount++;
 
         lastTrainTime = currentMillisTime;
@@ -635,7 +627,7 @@ final int CHILDREN_ROVERS_NUM = 5;
 
 class World {
   private ArrayList<SearchRecord> records = null;
-  public int update(ActorCriticLearner agent, Action action, int stateId) {
+  public int update(Action action, int stateId) {
     int lngNo = (int)floor((float)stateId / Action.SIZE.ordinal()) % widthBlockNum;
     int latNo = floor((float)stateId / (Action.SIZE.ordinal() * widthBlockNum));
 
@@ -673,10 +665,6 @@ class World {
     }
 
     return getState(latNo, lngNo, action);
-  }
-
-  public double reward(ActorCriticLearner agent, int stateId, Action action, Action oldAction) {
-    return 0;
   }
 
   public Set<Integer> getActionsAvailableAtState(int newState, Action oldAction) {
@@ -870,52 +858,6 @@ ArrayList<ArrayList<Pair<LatLng, Float>>> stateHistories = new ArrayList<ArrayLi
 
 int stateCount = widthBlockNum * heightBlockNum * Action.SIZE.ordinal(); // マップを7m正方形で分割したのがstateの数。7mなのはGPS半径5mの誤差円の内接正方形の一辺。
 int actionCount = Action.SIZE.ordinal(); // 0: 上 1: 右上 で8方向
-ActorCriticLearner agent = new ActorCriticLearner(stateCount, actionCount);
-
-void train() {
-  ArrayList<Pair<LatLng, Float>> stateHistory = new ArrayList<Pair<LatLng, Float>>();
-
-  ArrayList<SearchRecord> records = new ArrayList();
-  for (ChildRover rover : childrenRovers) {
-    records.addAll(rover.getRecords());
-  }
-
-  World world = new World();
-  world.setSearchRecords(records);
-  Function<Integer, Double> V = world.getValueFunction();
-
-  int currentState = world.getState(parentRover, Action.RIGHT);
-  List<Move> moves = new ArrayList<Move>();
-  Action oldAction = Action.RIGHT;
-
-  for (int time=0; time < 1000; ++time) {
-    Action action = Action.fromInteger(agent.selectAction(currentState, world.getActionsAvailableAtState(currentState, oldAction)));
-    // System.out.println("Agent does action-"+action);
-
-    int newStateId = world.update(agent, action, currentState);
-    double reward = world.reward(agent, currentState, action, oldAction);
-    int oldStateId = currentState;
-    moves.add(new Move(oldStateId, action, newStateId, reward));
-    currentState = newStateId;
-    if (world.isGoal(currentState)) {
-      //ゴールしたらbreak
-      break;
-    }
-    oldAction = action;
-  }
-
-  for (int i=moves.size()-1; i >= 0; --i) {
-    Move next_move = moves.get(i);
-    if (i != moves.size()-1) {
-      next_move = moves.get(i+1);
-    }
-    Move current_move = moves.get(i);
-    agent.update(current_move.oldState, current_move.action.ordinal(), current_move.newState, world.getActionsAvailableAtState(current_move.newState, current_move.action), current_move.reward, V);
-    stateHistory.add(new Pair<LatLng, Float>(world.stateToLatLng(current_move.oldState), world.actionToDegree(current_move.action)));
-  }
-
-  stateHistories.add(stateHistory);
-}
 
 final public class CoordinateComparator implements Comparator<Pair<Double, LatLng>> {
   public int compare(Pair<Double, LatLng> obj1, Pair<Double, LatLng> obj2) {
@@ -932,9 +874,6 @@ final public class CoordinateComparator implements Comparator<Pair<Double, LatLn
 
 int latLng2Int(LatLng latLng) {
   return (int)(floor((float)latLng.lng / oneBlockEdge) * heightBlockNum + (int)floor((float)latLng.lat / oneBlockEdge));
-}
-
-void test() {
 }
 
 void dijkstra() {
