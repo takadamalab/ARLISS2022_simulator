@@ -1,11 +1,3 @@
-import com.github.chen0040.rl.actionselection.*;
-import com.github.chen0040.rl.learning.actorcritic.*;
-import com.github.chen0040.rl.learning.qlearn.*;
-import com.github.chen0040.rl.learning.rlearn.*;
-import com.github.chen0040.rl.learning.sarsa.*;
-import com.github.chen0040.rl.models.*;
-import com.github.chen0040.rl.utils.*;
-
 import java.util.*;
 import java.util.function.Function;
 import javafx.util.Pair;
@@ -53,6 +45,8 @@ final String COMMAND_TEXT = "[コマンド]\n"
   + "　子機1加速度Z(コンソール): a\n";
 final int COMMAND_TEXT_WIDTH = 200;
 
+boolean m_isStop = false;
+
 // setup()実行後に繰り返し実行される処理
 void draw() {
   if (lastMillisTime == -1) {
@@ -61,6 +55,9 @@ void draw() {
     lastMillisTime = millis(); 
     return;
   }
+  
+  if (m_isStop) { return; }
+  
   long currentMillisTime = millis(); 
   double deltaT = (currentMillisTime - lastMillisTime) / 1000.0;
 
@@ -93,17 +90,22 @@ void draw() {
   if (mode == Mode.STAY_PARENT_AND_CHILDREN) {
     // 初期位置は設定済みなのでそのまま探索開始 
     if (currentMillisTime < 5000) {
-      for (ChildRover childRover : childrenRovers) {
-        switch(searchMode) { // 探索モードで行動変化
-        case STRAIGHT:
-          childRover.targetAzimuth = 90;
+      switch(searchMode) { // 探索モードで行動変化
+      case STRAIGHT:
+        for (ChildRover childRover : childrenRovers) {
+          childRover.targetCoord = new LatLng(SCREEN_HEIGHT / 2, SCREEN_WIDTH / 2);
           childRover.velocity = 8 * PIXEL_PER_METER;
-          break;
-        case ZIGZAG:
-          // TODO: ジグザクの実装
-          childRover.targetCoord = new LatLng(SCREEN_HEIGHT / 2, goalLineLng);
-          break;
         }
+        break;
+      case ZIGZAG:
+        // 初期位置は固定にしてみる
+        double[][] initPositionsRatio = {{0.1, 0.9}, {0.1, 0.1}, {0.5, 0.5}, {0.95, 0.1}, {0.9, 0.9}};
+        for (int i = 0; i < childrenRovers.size(); ++i) {
+          ChildRover childRover = childrenRovers.get(i);
+          childrenRovers.get(i).targetCoord = new LatLng(SCREEN_HEIGHT * initPositionsRatio[i][0], SCREEN_WIDTH * initPositionsRatio[i][1]);
+          childRover.velocity = 8 * PIXEL_PER_METER;
+        }
+        break;
       }
       mode = Mode.CHILDREN_SERACH;
     }
@@ -111,28 +113,81 @@ void draw() {
     switch(searchMode) { // 探索モードで行動変化
     case STRAIGHT:
       for (ChildRover childRover : childrenRovers) {
-        if (childRover.getCoord().lng > goalLineLng && !finishedSearchRoverIds.contains(childRover.id)) {
-          finishedSearchRoverIds.add(childRover.id);
+        if (childRover.getCoord().lng > goalLineLng && !finishedSearchRovers.contains(childRover)) {
+          finishedSearchRovers.add(childRover);
           childRover.velocity = 0;
         }
+      }
+
+      // 探索終了個体でモード変更
+      if (finishedSearchRovers.size() == CHILDREN_ROVERS_NUM) {
+        mode = Mode.SEND_CHILDREN_DATA;
       }
 
       break;
     case ZIGZAG:
-      for (ChildRover childRover : childrenRovers) {
-        childRover.targetCoord = new LatLng(SCREEN_HEIGHT / 2, goalLineLng);
-        if (childRover.isOnTargetPosition() && !finishedSearchRoverIds.contains(childRover.id)) {
-          finishedSearchRoverIds.add(childRover.id);
-          childRover.targetCoord = null;
+      Iterator<RoverBase> iterator = finishedSearchRovers.iterator();
+      while (iterator.hasNext()) {
+        RoverBase childRover = iterator.next();
+        ArrayList<Pair<LatLng, LatLng>> positionsSet = new ArrayList<Pair<LatLng, LatLng>>();
+        ArrayList<SearchRecord> records = new ArrayList<SearchRecord>();
+        for (ChildRover cr: childrenRovers) {
+          if (cr == childRover) { continue; }
+          positionsSet.add(new Pair<LatLng, LatLng>(cr.getCoord(), cr.targetCoord));
+          records.addAll(cr.getRecords());
+        }
+
+        int angleNum = 36;
+        int angleStart = (int)random(36);
+        int distanceNum = 3;
+        int distanceDiff = 30;
+        LatLng coord = childRover.getCoord();
+
+        double minBoundingSearchRecordsNum = 9999;
+        LatLng minBoundingNewTarget = null;
+        
+        for (int i = 0; i < angleNum; ++i) {
+          for (int j = distanceNum; j >= 1 ; --j) {
+            double newLat = coord.lat + sin(radians(360.0 / angleNum * (i * 11 + angleStart))) * distanceDiff * j * PIXEL_PER_METER;
+            double newLng = coord.lng + cos(radians(360.0 / angleNum * (i * 11 + angleStart))) * distanceDiff * j * PIXEL_PER_METER;
+            LatLng newTarget = new LatLng(newLat, newLng);
+            if (!(newLat > 0 && newLat < SCREEN_HEIGHT && newLng > 0 && newLng < SCREEN_WIDTH)) { continue; }
+            
+            ArrayList<Pair<LatLng, LatLng>> collidedPair = getCollidedOtherRoverTargetPath(coord, newTarget, positionsSet);
+            
+            if (collidedPair.isEmpty()) {
+              // DEBUG
+              //stroke(255, 0, 0);
+              //line((float)(coord.lng + diffX - diffY), (float)(coord.lat + diffY + diffX), (float)(newTarget.lng - diffX - diffY), (float)(newTarget.lat - diffY + diffX));
+              //line((float)(coord.lng + diffX + diffY), (float)(coord.lat + diffY - diffX), (float)(newTarget.lng - diffX + diffY), (float)(newTarget.lat - diffY - diffX));
+              //m_isStop = true;
+                
+              ArrayList<SearchRecord> boundingRecords = findBoundingRecord(newTarget, records);
+              if (boundingRecords.size() < minBoundingSearchRecordsNum) {
+                minBoundingSearchRecordsNum = boundingRecords.size();
+                minBoundingNewTarget = newTarget;
+              }
+            }
+          }
+        }
+
+        if (minBoundingNewTarget != null) {
+          childRover.targetCoord = minBoundingNewTarget;
           childRover.velocity = 0;
+          childRover.targetVelocity = new Double(8 * PIXEL_PER_METER);
+          iterator.remove();
         }
       }
+      
+      if (currentMillisTime > 120 * 1000) {
+        for (ChildRover childRover: childrenRovers) {
+          childRover.targetCoord = null;
+          childRover.velocity = 0;
+          childRover.targetVelocity = null;
+        }
+        mode = Mode.SEND_CHILDREN_DATA;
+      }
       break;
-    }
-
-    // 探索終了個体でモード変更
-    if (finishedSearchRoverIds.size() == CHILDREN_ROVERS_NUM) {
-      mode = Mode.SEND_CHILDREN_DATA;
     }
   } else if (mode == Mode.SEND_CHILDREN_DATA) {
     // 省略(実機では通信などでデータを送る必要がある)
@@ -142,7 +197,7 @@ void draw() {
     case ACTOR_CRITIC:
       if (currentMillisTime - lastTrainTime > 0 && trainCount < 10000) {
         System.out.println("train: " + trainCount + "/10000");
-        train();
+        //train(); // 削除
         trainCount++;
 
         lastTrainTime = currentMillisTime;
@@ -167,6 +222,13 @@ void draw() {
     drawRover(childRover, 0, 50 + 20 * i, 0);
     if (i == 0 && isShowAccelZ) {
       System.out.println("AccelZ: " + childRover.getAccelZ());
+    }
+    
+    // targetCoord表示
+    stroke(0, 50 + 20 * i, 0);
+    strokeWeight(10);
+    if (childRover.targetCoord != null) {
+      point((float)childRover.targetCoord.lng, (float)childRover.targetCoord.lat);
     }
 
     // 探索記録表示
@@ -253,8 +315,8 @@ enum SearchMode {
   STRAIGHT, // 直進
     ZIGZAG // ジグザグ
 };
-SearchMode searchMode = SearchMode.STRAIGHT;
-HashSet<Integer> finishedSearchRoverIds = new HashSet<Integer>(); // 探索が終了したローバのid
+SearchMode searchMode = SearchMode.ZIGZAG;
+HashSet<RoverBase> finishedSearchRovers = new HashSet<RoverBase>(); // 探索が終了したローバ
 
 class SearchRecord { // 探索のモード
   int id; 
@@ -285,12 +347,14 @@ class RoverBase {
   private LatLng latLng; //y
   public double targetAzimuth;
   public LatLng targetCoord = null;
-  public double velocity; //速度 (加速度とかはめんどいので省略)
+  public double velocity; //速度 
+  public Double targetVelocity = null;
   private double azimuth;
   private double accelZ;
 
   // シミュレーション上関連
-  private final double rotateAbility = 10; // 回転速度deg/sec
+  private final double rotateAbility = 50; // 回転速度deg/sec
+  private final double accelAbility = 1; // 加速度m/sec^2
   private final double gpsError = 5; // GPS誤差 m
   private float lastMapColor;
   private float azimuthUpdateElipsedTime = 0;
@@ -319,7 +383,7 @@ class RoverBase {
   }
 
   double getAzimuth() { // 方位角情報(誤差含む)
-    return azimuth - 5.0 + random(10.0);
+    return azimuth - 25.0 + random(50.0);
   }
 
   double getAccelZ() { // 加速度情報(誤差含む)
@@ -343,10 +407,20 @@ class RoverBase {
     LatLng coord = getCoord();
     double latDiff = coord.lat - targetCoord.lat;
     double lngDiff = coord.lng - targetCoord.lng;
-    return latDiff * latDiff + lngDiff * lngDiff < gpsError * gpsError * PIXEL_PER_METER * PIXEL_PER_METER;
+    return latDiff * latDiff + lngDiff * lngDiff < gpsError * gpsError * PIXEL_PER_METER * PIXEL_PER_METER * 1.75;
   }
 
   void update(double deltaT) {
+    // 速度制御
+    if (targetVelocity != null) {
+      if (targetVelocity - velocity > accelAbility) {
+        velocity += accelAbility;
+      } else if (targetVelocity - velocity < -accelAbility) { 
+        velocity -= accelAbility;
+      } else {
+        velocity = targetVelocity;
+      }
+    }
     // 回転制御
     if (targetCoord != null) {
       LatLng coord = getCoord();
@@ -374,17 +448,18 @@ class RoverBase {
     latLng.lat += cos(radians((float)getAzimuth())) * velocity * deltaT;
     latLng.lng += sin(radians((float)getAzimuth())) * velocity * deltaT;
 
-    if (latLng.lat < gpsError * PIXEL_PER_METER * 2) {
-      latLng.lat = gpsError * PIXEL_PER_METER * 2;
-    } else if (latLng.lat > SCREEN_HEIGHT - gpsError * PIXEL_PER_METER * 2) {
-      latLng.lat = SCREEN_HEIGHT - gpsError * PIXEL_PER_METER * 2;
-    }
+    // 範囲制限
+    //if (latLng.lat < gpsError * PIXEL_PER_METER * 2) {
+    //  latLng.lat = gpsError * PIXEL_PER_METER * 2;
+    //} else if (latLng.lat > SCREEN_HEIGHT - gpsError * PIXEL_PER_METER * 2) {
+    //  latLng.lat = SCREEN_HEIGHT - gpsError * PIXEL_PER_METER * 2;
+    //}
 
-    if (latLng.lng < gpsError * PIXEL_PER_METER * 2) {
-      latLng.lng = gpsError * PIXEL_PER_METER * 2;
-    } else if (latLng.lng > SCREEN_WIDTH - gpsError * PIXEL_PER_METER * 2) {
-      latLng.lng = SCREEN_WIDTH - gpsError * PIXEL_PER_METER * 2;
-    }
+    //if (latLng.lng < gpsError * PIXEL_PER_METER * 2) {
+    //  latLng.lng = gpsError * PIXEL_PER_METER * 2;
+    //} else if (latLng.lng > SCREEN_WIDTH - gpsError * PIXEL_PER_METER * 2) {
+    //  latLng.lng = SCREEN_WIDTH - gpsError * PIXEL_PER_METER * 2;
+    //}
 
     // センサ値更新
     azimuthUpdateElipsedTime += deltaT;
@@ -408,6 +483,10 @@ class ChildRover extends RoverBase {
   private double lastRecordElipsedTime = 0;
   private ArrayList<Double> azimuthRecords = new ArrayList<Double>();
   private ArrayList<Double> accelZRecords = new ArrayList<Double>();
+  private LatLng trueTargetCoord = null;
+  private boolean isColliedOtherRoverPath = false;
+  private float avoidColliedTargetDiff = 0;
+  private double checkColliedTimer = 0;
 
   ChildRover(int id, double lat, double lng, double azimuth) {
     super(id, lat, lng, azimuth);
@@ -416,9 +495,99 @@ class ChildRover extends RoverBase {
   @Override void update(double deltaT) {
     // 調査記録
     if (mode == Mode.CHILDREN_SERACH) {
+      if (targetCoord == null) {
+        return;
+      }
+
+      LatLng coord = getCoord();
+
+      // 衝突回避
+      checkColliedTimer += deltaT;
+      if (checkColliedTimer > 1) {
+        checkColliedTimer = 0;
+        if (trueTargetCoord == null) {
+          trueTargetCoord = targetCoord;
+        }
+        ArrayList<Pair<LatLng, LatLng>> positionsSet = new ArrayList<Pair<LatLng, LatLng>>();
+        for (ChildRover cr: childrenRovers) {
+          if (cr == this) { continue; }
+          positionsSet.add(new Pair<LatLng, LatLng>(cr.getCoord(), cr.targetCoord));
+        }
+        ArrayList<Pair<LatLng, LatLng>> collidedPair = getCollidedOtherRoverTargetPath(coord, trueTargetCoord, positionsSet);
+        if (!collidedPair.isEmpty()) {
+          // ペアに左肩/右肩下がりがあるか
+          boolean isExistOthersPathOnLeft = false;
+          boolean isExistOthersPathOnRight = false;
+          double minPathLength = 999999;
+          // 一番近いペアが右肩さがりにあるか
+          boolean isNearestPairOnRight = true;
+          
+          for (Pair<LatLng, LatLng> pair : collidedPair) {
+            LatLng key = pair.getKey();
+            LatLng value = pair.getValue();
+
+            // ペアの端点のうち一番近い方
+            LatLng nearestPairPoint = null;
+
+            if (value != null) {
+              double diffRoverCoordLat = coord.lat - key.lat;
+              double diffRoverCoordLng = coord.lng - key.lng;
+              double diffTargetCoordLat = coord.lat - value.lat;
+              double diffTargetCoordLng = coord.lng - value.lng;
+
+              nearestPairPoint = (diffRoverCoordLat * diffRoverCoordLat + diffRoverCoordLng * diffRoverCoordLng) < (diffTargetCoordLat * diffTargetCoordLat + diffTargetCoordLng * diffTargetCoordLng) ? key : value;
+
+              double distance = linePointMinDistance(coord, trueTargetCoord, nearestPairPoint);
+              if (distance < minPathLength) {
+                minPathLength = distance;
+                isNearestPairOnRight = isExistPointRight(coord, trueTargetCoord, nearestPairPoint);
+              }
+            } else {
+              nearestPairPoint = key;
+
+              double distance = pointDistance(coord, key);
+              if (distance < minPathLength) {
+                minPathLength = distance;
+                isNearestPairOnRight = isExistPointRight(coord, trueTargetCoord, key);
+              }
+            }
+
+            if (isExistPointRight(coord, trueTargetCoord, nearestPairPoint)) {
+              isExistOthersPathOnRight = true;
+            } else {
+              isExistOthersPathOnLeft = true;
+            }
+          }
+          
+          if (isNearestPairOnRight) {
+            double diffLat = trueTargetCoord.lat - coord.lat;
+            double diffLng = trueTargetCoord.lng - coord.lng;
+            avoidColliedTargetDiff = avoidColliedTargetDiff < 90 ? avoidColliedTargetDiff + 1 : avoidColliedTargetDiff;
+            float angle = radians(degrees(atan2((float)diffLat, (float)diffLng)) + (isExistOthersPathOnRight ? -avoidColliedTargetDiff : avoidColliedTargetDiff));
+            targetCoord = new LatLng(coord.lat + sin(angle) * 9999, coord.lng + cos(angle) * 9999);
+          }
+
+          if (isExistOthersPathOnLeft && isExistOthersPathOnRight) {
+            velocity = targetVelocity / 2;
+          }
+          isColliedOtherRoverPath = true;
+        } else {
+          targetCoord = trueTargetCoord;
+          isColliedOtherRoverPath = false;
+        }
+      }
+      
+      if (!isColliedOtherRoverPath && isOnTargetPosition()) {
+        targetCoord = null;
+        trueTargetCoord = null;
+        avoidColliedTargetDiff = 0;
+        velocity = 0;
+        finishedSearchRovers.add(this);
+      }
+      
       lastRecordElipsedTime += deltaT;
-      if (lastRecordElipsedTime > 0.5) {
-        LatLng coord = getCoord();
+      
+      if (lastRecordElipsedTime > 0.5) { 
         float accelZVariance = variance(accelZRecords);
         records.add(new SearchRecord(id, coord.lat, coord.lng, accelZVariance, mean(azimuthRecords), new Date()));
         // 手前いくつかの記録も更新する
@@ -450,7 +619,7 @@ class ChildRover extends RoverBase {
 
 ParentRover parentRover;
 ArrayList<ChildRover> childrenRovers;
-final int CHILDREN_ROVERS_NUM = 7;
+final int CHILDREN_ROVERS_NUM = 5;
 
 /*
 * 経路探索 =======================
@@ -458,7 +627,7 @@ final int CHILDREN_ROVERS_NUM = 7;
 
 class World {
   private ArrayList<SearchRecord> records = null;
-  public int update(ActorCriticLearner agent, Action action, int stateId) {
+  public int update(Action action, int stateId) {
     int lngNo = (int)floor((float)stateId / Action.SIZE.ordinal()) % widthBlockNum;
     int latNo = floor((float)stateId / (Action.SIZE.ordinal() * widthBlockNum));
 
@@ -498,26 +667,8 @@ class World {
     return getState(latNo, lngNo, action);
   }
 
-  public double reward(ActorCriticLearner agent, int stateId, Action action, Action oldAction) {
-    return 0;
-  }
-
   public Set<Integer> getActionsAvailableAtState(int newState, Action oldAction) {
     HashSet<Action> actionSet;
-    //if (oldAction == null) {
-    //  // 全アクション生成
-    //  actionSet = new HashSet<Action>(Arrays.asList(Action.values()));
-    //  actionSet.remove(Action.SIZE);
-    //} else {
-    //  // 前回のActionから近いアクションを生成する
-    //  int actionSize = Action.SIZE.ordinal();
-    //  actionSet = new HashSet<Action>();
-    //  actionSet.add(Action.fromInteger((oldAction.ordinal() + actionSize - 1) % actionSize)); //一つ左回り
-    //  actionSet.add(oldAction); // 同方向
-    //  actionSet.add(Action.fromInteger((oldAction.ordinal() + actionSize + 1) % actionSize)); //一つ右回り
-    //}
-
-    //Action action = Action.fromInteger(newState % Action.SIZE.ordinal());
     int lngNo = (int)floor((float)newState / Action.SIZE.ordinal()) % widthBlockNum;
     int latNo = floor((float)newState / (Action.SIZE.ordinal() * widthBlockNum));
 
@@ -707,52 +858,6 @@ ArrayList<ArrayList<Pair<LatLng, Float>>> stateHistories = new ArrayList<ArrayLi
 
 int stateCount = widthBlockNum * heightBlockNum * Action.SIZE.ordinal(); // マップを7m正方形で分割したのがstateの数。7mなのはGPS半径5mの誤差円の内接正方形の一辺。
 int actionCount = Action.SIZE.ordinal(); // 0: 上 1: 右上 で8方向
-ActorCriticLearner agent = new ActorCriticLearner(stateCount, actionCount);
-
-void train() {
-  ArrayList<Pair<LatLng, Float>> stateHistory = new ArrayList<Pair<LatLng, Float>>();
-
-  ArrayList<SearchRecord> records = new ArrayList();
-  for (ChildRover rover : childrenRovers) {
-    records.addAll(rover.getRecords());
-  }
-
-  World world = new World();
-  world.setSearchRecords(records);
-  Function<Integer, Double> V = world.getValueFunction();
-
-  int currentState = world.getState(parentRover, Action.RIGHT);
-  List<Move> moves = new ArrayList<Move>();
-  Action oldAction = Action.RIGHT;
-
-  for (int time=0; time < 1000; ++time) {
-    Action action = Action.fromInteger(agent.selectAction(currentState, world.getActionsAvailableAtState(currentState, oldAction)));
-    // System.out.println("Agent does action-"+action);
-
-    int newStateId = world.update(agent, action, currentState);
-    double reward = world.reward(agent, currentState, action, oldAction);
-    int oldStateId = currentState;
-    moves.add(new Move(oldStateId, action, newStateId, reward));
-    currentState = newStateId;
-    if (world.isGoal(currentState)) {
-      //ゴールしたらbreak
-      break;
-    }
-    oldAction = action;
-  }
-
-  for (int i=moves.size()-1; i >= 0; --i) {
-    Move next_move = moves.get(i);
-    if (i != moves.size()-1) {
-      next_move = moves.get(i+1);
-    }
-    Move current_move = moves.get(i);
-    agent.update(current_move.oldState, current_move.action.ordinal(), current_move.newState, world.getActionsAvailableAtState(current_move.newState, current_move.action), current_move.reward, V);
-    stateHistory.add(new Pair<LatLng, Float>(world.stateToLatLng(current_move.oldState), world.actionToDegree(current_move.action)));
-  }
-
-  stateHistories.add(stateHistory);
-}
 
 final public class CoordinateComparator implements Comparator<Pair<Double, LatLng>> {
   public int compare(Pair<Double, LatLng> obj1, Pair<Double, LatLng> obj2) {
@@ -769,9 +874,6 @@ final public class CoordinateComparator implements Comparator<Pair<Double, LatLn
 
 int latLng2Int(LatLng latLng) {
   return (int)(floor((float)latLng.lng / oneBlockEdge) * heightBlockNum + (int)floor((float)latLng.lat / oneBlockEdge));
-}
-
-void test() {
 }
 
 void dijkstra() {
@@ -881,6 +983,44 @@ ArrayList<SearchRecord> findBoundingRecord(final LatLng latLng, ArrayList<Search
   return filteredRecords;
 }
 
+ArrayList<Pair<LatLng, LatLng>> getCollidedOtherRoverTargetPath(LatLng coord, LatLng target, ArrayList<Pair<LatLng, LatLng>> positionsSet) { 
+  // 仮目標地点から自機までの角度
+  float rad = atan2((float)(coord.lat - target.lat), (float)(coord.lng - target.lng));
+  double diffX = cos(rad) * PIXEL_PER_METER * 5 * 2;
+  double diffY = sin(rad) * PIXEL_PER_METER * 5 * 2;
+  
+  ArrayList<Pair<LatLng, LatLng>> collidedPair = new ArrayList<Pair<LatLng, LatLng>>();
+  for (Pair<LatLng, LatLng> pair : positionsSet) {
+    LatLng coordL = new LatLng(coord.lat + diffY - diffX, coord.lng + diffX + diffY);
+    LatLng coordR = new LatLng(coord.lat + diffY + diffX, coord.lng + diffX - diffY);
+    LatLng targetL = new LatLng(target.lat - diffY - diffX, target.lng - diffX + diffY);
+    LatLng targetR = new LatLng(target.lat - diffY + diffX, target.lng - diffX - diffY);
+    
+    // DEBUG
+    //stroke(255, 255, 0);
+    //line((float)pair.getKey().lng, (float)pair.getKey().lat, (float)pair.getValue().lng, (float)pair.getValue().lat);
+      
+    if (pair.getValue() != null) { //targtargetCoordetPositionはnullの可能性がある
+      // 線分交差判定(線がぶつかっていたらやめる), 長方形内外点判定(点が内側にあったらやめる)
+      if (crossLineJudge(coordR, targetR, pair.getKey(), pair.getValue()) // 線分交差判定 右側
+      || crossLineJudge(coordL, targetL, pair.getKey(), pair.getValue()) //線分交差判定 左側
+      || pointInCheck(coordR, targetR, targetL, coordL, pair.getKey()) // 長方形内外点判定 他子機自点
+      || pointInCheck(coordR, targetR, targetL, coordL, pair.getValue())) { // 長方形内外点判定 他子機目標点 
+        collidedPair.add(pair);
+        break;
+      }
+    } else {
+      // 長方形内外点判定(点が内側にあったらやめる)
+      if (pointInCheck(coordR, targetR, targetL, coordL, pair.getKey())) {
+        collidedPair.add(pair);
+        break;
+      }
+    }
+  }
+
+  return collidedPair;
+}
+
 /*
 * Utility =======================
  */
@@ -921,4 +1061,72 @@ float standardDeviation(ArrayList<Double> x) {
 
 double bivariateNormalDistribution(double x, double y, Double[] mu, Double[] sigma) {
   return Math.exp(-(Math.pow(x - mu[0], 2) / Math.pow(sigma[0], 2) + Math.pow(y - mu[1], 2) / Math.pow(sigma[1], 2))/(2 * Math.pow(sigma[0], 2) * Math.pow(sigma[1], 2))) / (2 * Math.PI * sigma[0] * sigma[1]);
+}
+
+// 線分交差
+// 線分a1a2, b1b2が交差する場合True
+// 端点が他方の線分上にある場合もTrue
+// 端点が他方の線分の延長線上にある場合もTrueを返すので注意
+boolean crossLineJudge(LatLng a1, LatLng a2, LatLng b1, LatLng b2) {
+    double s, t;
+    s = (a1.lng - a2.lng) * (b1.lat - a1.lat) - (a1.lat - a2.lat) * (b1.lng - a1.lng);
+    t = (a1.lng - a2.lng) * (b2.lat - a1.lat) - (a1.lat - a2.lat) * (b2.lng - a1.lng);
+    if (s * t > 0) return false;
+
+    s = (b1.lng - b2.lng) * (a1.lat - b1.lat) - (b1.lat - b2.lat) * (a1.lng - b1.lng);
+    t = (b1.lng - b2.lng) * (a2.lat - b1.lat) - (b1.lat - b2.lat) * (a2.lng - b1.lng);
+    if (s * t > 0) return false;
+    return true;
+}
+
+double pointDistance(LatLng p1, LatLng p2) {
+  double latDiff = p1.lat - p2.lat;
+  double lngDiff = p1.lng - p2.lng;
+  return sqrt((float)(latDiff * latDiff + lngDiff * lngDiff));
+}
+
+// 線分(l1, l2)・点(p)の距離を返す
+double linePointMinDistance(LatLng l1, LatLng l2, LatLng p) {
+  double a = p.lng - l2.lng;
+  double b = p.lat - l2.lat;
+  double a2 = a * a;
+  double b2 = b * b;
+  double r2 = a2 + b2;
+  double tt = -(a * (l2.lng - l1.lng)+ b * (l2.lat - l1.lat));
+  if( tt < 0 ) {
+    return (l2.lng - l1.lng)*(l2.lng - l1.lng) + (l2.lat - l1.lat)*(l2.lat - l1.lat);
+  }
+  if( tt > r2 ) {
+    return (p.lng - l1.lng) * (p.lng - l1.lng) + (p.lat - l1.lat) * (p.lat - l1.lat);
+  }
+  double f1 = a * (l2.lat - l1.lat) - b * (l2.lng - l1.lng);
+  return (f1 * f1) / r2;
+}
+
+// 点が長方形の内側にある
+// 参考: https://yttm-work.jp/collision/collision_0007.html#head_line_02
+boolean pointInCheck(LatLng a1, LatLng a2, LatLng a3, LatLng a4, LatLng p){
+  LatLng[] a = {a1, a2, a3, a4};
+  for (int i = 0; i < 4; i++) {
+    double edgeDiffX = a[(i + 1) % 4].lng - a[i].lng;
+    double edgeDiffY = a[(i + 1) % 4].lat - a[i].lat;
+    double pointDiffX = p.lng - a[i].lng;
+    double pointDiffY = p.lat - a[i].lat;
+    if (crossProduct(edgeDiffX, edgeDiffY, pointDiffX, pointDiffY) < 0) {
+      return false;
+    }
+  }
+  return true;
+}
+
+boolean isExistPointRight(LatLng a1, LatLng a2, LatLng p) {
+  double ax = a2.lng - a1.lng;
+  double ay = a2.lat - a1.lat;
+  double bx = a2.lng - p.lng;
+  double by = a2.lat - p.lat;
+  return crossProduct(ax, ay, bx, by) >= 0;
+}
+
+double crossProduct(double ax, double ay, double bx, double by){
+     return ax * by - bx * ay;
 }
